@@ -1,0 +1,3 @@
+cd bin
+rc
+cd ..
