@@ -1,3 +1,3 @@
 cd bin
-rcDEBUG
+rc
 cd ..

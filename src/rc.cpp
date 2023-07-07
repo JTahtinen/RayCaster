@@ -1,5 +1,6 @@
 #include <jadel.h>
 #include <thread>
+#include "debug.h"
 #include "timer.h"
 
 #define MATH_PI (3.141592653)
@@ -17,9 +18,35 @@ static float frameTime;
 #define MAP_WIDTH (20)
 #define MAP_HEIGHT (15)
 
-#define MAX_RAY_DISTANCE (10)
-
 static int map[MAP_WIDTH * MAP_HEIGHT];
+
+static float standardMovementSpeed = 1.2f;
+static float runningMovementSpeed = 2.4f;
+
+static bool showMiniMap = false;
+
+static int currentRayMaxDistance = 10;
+static Timer frameTimer;
+struct Actor
+{
+    jadel::Vec2 pos;
+    jadel::Vec2 vel;
+    jadel::Rectf dim;
+    float facingAngle;
+    float movementSpeed;
+    float turningSpeed;
+};
+
+struct Player
+{
+    Actor actor;
+};
+
+Actor *actors;
+size_t numActors;
+size_t maxActors;
+
+static Player player;
 
 struct Line
 {
@@ -34,31 +61,78 @@ struct RectRenderable
     jadel::Color color;
 };
 
-#define MAX_LINE_RENDERABLES (500)
-#define MAX_RECT_RENDERABLES (500)
+struct RayResult
+{
+    jadel::Vec2 start;
+    jadel::Vec2 end;
+    bool isVerticallyClipped;
+    bool isClippedOnCorner;
+    int rayEndContent;
 
-Line lineRenderables[MAX_LINE_RENDERABLES];
-int numLineRenderables;
+    inline float length() const
+    {
+        float result = rayVector().length();
+        return result;
+    }
 
-RectRenderable rectRenderables[MAX_RECT_RENDERABLES];
-int numRectRenderables;
+    inline jadel::Vec2 rayVector() const
+    {
+        jadel::Vec2 result = end - start;
+        return result;
+    }
+};
+
+struct Minimap
+{
+    jadel::Vec2 screenStart;
+    float scale;
+    RectRenderable *rects;
+    size_t maxRects;
+    size_t numRects;
+    Line *lines;
+    size_t maxLines;
+    size_t numLines;
+
+    int pushRect(jadel::Rectf rect, jadel::Color color)
+    {
+        if (numRects >= maxRects)
+            return 0;
+        rects[numRects++] = {rect, color};
+        return 1;
+    }
+
+    int pushRect(jadel::Vec2 p0, jadel::Vec2 p1, jadel::Color color)
+    {
+        return pushRect(jadel::Rectf(p0, p1), color);
+    }
+
+    int pushLine(jadel::Vec2 start, jadel::Vec2 end, jadel::Color color)
+    {
+        if (numLines >= maxLines)
+            return 0;
+        this->lines[this->numLines++] = {start, end, color};
+        return 1;
+    }
+
+    jadel::Vec2 findPointOnScreen(jadel::Vec2 point) const
+    {
+        jadel::Vec2 result = this->screenStart + (jadel::Vec2(point.x * aspectHeight, point.y) * this->scale);
+        return result;
+    }
+
+    void clear()
+    {
+        this->numRects = 0;
+        this->numLines = 0;
+    }
+};
 
 jadel::Vec2 camPos(1, 1);
 jadel::Vec2 lastCamPos(1, 1);
 
-void pushLineRenderable(jadel::Vec2 start, jadel::Vec2 end, jadel::Color color)
-{
-    if (numLineRenderables < MAX_LINE_RENDERABLES)
-        lineRenderables[numLineRenderables++] = {start, end, color};
-}
+static Minimap minimap;
 
-void pushRectRenderable(jadel::Rectf rect, jadel::Color color)
-{
-    if (numRectRenderables < MAX_RECT_RENDERABLES)
-        rectRenderables[numRectRenderables++] = {rect, color};
-}
-
-jadel::Vec2 clipVectorAtY(jadel::Vec2 source, float y)
+jadel::Vec2 clipSegmentFromLineAtY(jadel::Vec2 source, float y)
 {
     if (source.y == 0)
         return source;
@@ -67,7 +141,7 @@ jadel::Vec2 clipVectorAtY(jadel::Vec2 source, float y)
     return result;
 }
 
-jadel::Vec2 clipVectorAtX(jadel::Vec2 source, float x)
+jadel::Vec2 clipSegmentFromLineAtX(jadel::Vec2 source, float x)
 {
     if (source.x == 0)
         return source;
@@ -83,22 +157,15 @@ int getSectorContent(int x, int y)
     return map[x + y * MAP_WIDTH];
 }
 
-int getSectorContent(float x, float y)
-{
-    if (x < 0 || x >= MAP_WIDTH || y < 0 || y >= MAP_HEIGHT)
-        return 0;
-    return getSectorContent((int)x, (int)y);
-}
-
 bool isVec2ALongerThanB(jadel::Vec2 a, jadel::Vec2 b)
 {
-    bool result = (a.x * a.x + a.y * a.y > b.x * b.x + b.y * b.y);
+    bool result = (a.x * a.x + a.y * a.y) > (b.x * b.x + b.y * b.y);
     return result;
 }
 
 bool isVec2ALengthEqualToB(jadel::Vec2 a, jadel::Vec2 b)
 {
-    bool result = (a.x * a.x + a.y * a.y == b.x * b.x + b.y * b.y);
+    bool result = (a.x * a.x + a.y * a.y) == (b.x * b.x + b.y * b.y);
     return result;
 }
 
@@ -108,240 +175,340 @@ float getCosBetweenVectors(jadel::Vec2 a, jadel::Vec2 b)
     return result;
 }
 
+bool isValueBetween(float min, float max, float val)
+{
+    bool result = min < val && max >= val;
+    return result;
+}
+
+float moduloFloat(float value, int mod)
+{
+    float result = value;
+    if (!isValueBetween(0, (float)mod, value))
+    {
+        float remainder = value - (int)value;
+        float fixedValue = (int)(roundf(value)) % mod + remainder;
+        if (fixedValue < 0)
+            fixedValue += (float)mod;
+        result = fixedValue;
+    }
+    return result;
+}
+
+jadel::Mat3 getRotationMatrix(float angleInDegrees)
+{
+    float finalAngle = moduloFloat(angleInDegrees, 360);
+    float radAngle = TO_RADIANS(finalAngle);
+    jadel::Mat3 result =
+        {
+            cosf(radAngle), sinf(radAngle), 0,
+            -sinf(radAngle), cosf(radAngle), 0,
+            0, 0, 1};
+    return result;
+}
+
+void setActorRotation(Actor *actor, float angle)
+{
+    if (!actor)
+        return;
+    actor->facingAngle = moduloFloat(angle, 360);
+}
+
+void rotateActorTowards(Actor *actor, int dir)
+{
+    if (!actor)
+        return;
+    setActorRotation(actor, actor->facingAngle - (float)dir * actor->turningSpeed * frameTime);
+}
+
 static float camRotation = 0;
 
 jadel::Mat3 cameraRotationMatrix;
 static float screenPlaneDist = 0.15f;
 static float screenPlaneWidth = screenPlaneDist / aspectHeight;
+
+int shootRay(const jadel::Vec2 start, const jadel::Vec2 dir, uint32 maxDistance, RayResult *result)
+{
+    if (maxDistance < 1)
+        return 0;
+    int isXDirPositive = dir.x > 0 ? 1 : 0;
+    int isYDirPositive = dir.y > 0 ? 1 : 0;
+
+    // jadel::Vec2 unRotatedScreenClip = clipSegmentFromLineAtY(unRotatedRayLine, defaultScreenPlane.y);
+    // jadel::Vec2 rotatedScreenClip = cameraRotationMatrix.mul(unRotatedScreenClip);
+
+    int rayEndContent = 0;
+
+    bool raySegmentIsVerticallyClipped = false;
+    bool raySegmentIsClippedOnCorner = false;
+    jadel::Vec2 rayMarchPos = start;
+    int numDebugFloats = 0;
+    for (int i = 0; i < maxDistance; ++i)
+    {
+        float rayEndDistToHorizontalSector = (float)((int)(rayMarchPos.x + (float)isXDirPositive)) - rayMarchPos.x;
+        float rayEndDistToVerticalSector = (float)((int)(rayMarchPos.y + (float)isYDirPositive)) - rayMarchPos.y;
+
+        if (!isYDirPositive && rayEndDistToVerticalSector == 0)
+        {
+            rayEndDistToVerticalSector = -1.0f;
+        }
+        if (!isXDirPositive && rayEndDistToHorizontalSector == 0)
+        {
+            rayEndDistToHorizontalSector = -1.0f;
+        }
+
+        /*
+        Cut a segment from a line whose slope is the same as the ray's,
+        and whose length covers the distance to the next sector.
+        */
+
+        jadel::Vec2 horizontallyClippedRaySegment = clipSegmentFromLineAtX(dir, rayEndDistToHorizontalSector);
+        jadel::Vec2 verticallyClippedRaySegment = clipSegmentFromLineAtY(dir, rayEndDistToVerticalSector);
+
+        /*
+            Compare the length of the ray that clips with the next sector in the X-axis
+            with the one that clips with the Y-axis, choose the shorter one, and add it
+            to the existing ray
+        */
+
+        jadel::Vec2 clippedRaySegment(0, 0);
+        if (isVec2ALongerThanB(horizontallyClippedRaySegment, verticallyClippedRaySegment))
+        {
+            clippedRaySegment = verticallyClippedRaySegment;
+            raySegmentIsVerticallyClipped = true;
+            raySegmentIsClippedOnCorner = false;
+        }
+        else if (isVec2ALongerThanB(verticallyClippedRaySegment, horizontallyClippedRaySegment))
+        {
+            clippedRaySegment = horizontallyClippedRaySegment;
+            raySegmentIsVerticallyClipped = false;
+            raySegmentIsClippedOnCorner = false;
+        }
+        else
+        {
+            clippedRaySegment = horizontallyClippedRaySegment;
+            raySegmentIsClippedOnCorner = true;
+        }
+        rayMarchPos += clippedRaySegment;
+        if (rayMarchPos.x <= 0 || rayMarchPos.y <= 0 || rayMarchPos.x >= MAP_WIDTH || rayMarchPos.y >= MAP_HEIGHT)
+            break;
+
+        bool xMarginNeeded = ((!isXDirPositive && !raySegmentIsVerticallyClipped) || raySegmentIsClippedOnCorner);
+        bool yMarginNeeded = ((!isYDirPositive && raySegmentIsVerticallyClipped) || raySegmentIsClippedOnCorner);
+
+        float xMargin = xMarginNeeded * (-0.1f);
+        float yMargin = yMarginNeeded * (-0.1f);
+
+        rayEndContent = getSectorContent(floorf(rayMarchPos.x + xMargin), floorf(rayMarchPos.y + yMargin));
+        if (rayEndContent)
+        {
+            break;
+        }
+    }
+    result->start = start;
+    result->end = rayMarchPos;
+    result->isVerticallyClipped = raySegmentIsVerticallyClipped;
+    result->isClippedOnCorner = raySegmentIsClippedOnCorner;
+    result->rayEndContent = rayEndContent;
+    return 1;
+}
+
+float getAngleOfVec2(jadel::Vec2 vec)
+{
+    if (vec.x < 0)
+    {
+        return 360.0f + TO_DEGREES(atan2(vec.x, vec.y));
+    }
+    else
+    {
+        return TO_DEGREES(atan2(vec.x, vec.y));
+    }
+}
+
+bool collision = false;
+
 void render()
 {
-    numLineRenderables = 0;
-    numRectRenderables = 0;
     jadel::graphicsClearTargetSurface();
 
     jadel::graphicsDrawRectRelative({-1, -1, 1, 0}, {1, 0.3f, 0.4f, 0.25f});
     jadel::graphicsDrawRectRelative({-1, 0, 1, 1}, {1, 0.2f, 0.2f, 0.4f});
+    static jadel::Vec2 camPosMapDim(0.3f, 0.3f);
+
+    minimap.pushRect(jadel::Rectf(camPos - camPosMapDim, camPos + camPosMapDim), {1, 1, 0, 0});
+
     const float edgeXDiff = 1.0f;
     float columnWidth = (2.0f * edgeXDiff) / (float)screenWidth;
-    static jadel::Vec2 mapStart(0.2f, 0);
-
-    jadel::Vec2 unRotatedScreenStartClip(-screenPlaneWidth * 0.5f, screenPlaneDist);
-    jadel::Vec2 unRotatedScreenEndClip(screenPlaneWidth * 0.5f, screenPlaneDist);
-    jadel::Vec2 screenWorldStart = camPos + cameraRotationMatrix.mul(unRotatedScreenStartClip);
-    jadel::Vec2 screenWorldEnd = camPos + cameraRotationMatrix.mul(unRotatedScreenEndClip);
+    static jadel::Vec2 minimapStart(0.2f, 0);
+    jadel::Vec2 minimapCameraStart = minimapStart + camPos * 0.05f;
+    jadel::Vec2 unRotatedVirtualScreenStartClip(-screenPlaneWidth * 0.5f, screenPlaneDist);
+    jadel::Vec2 unRotatedVirtualScreenEndClip(screenPlaneWidth * 0.5f, screenPlaneDist);
+    jadel::Vec2 virtualScreenWorldStart = camPos + cameraRotationMatrix.mul(unRotatedVirtualScreenStartClip);
+    jadel::Vec2 virtualScreenWorldEnd = camPos + cameraRotationMatrix.mul(unRotatedVirtualScreenEndClip);
     float screenPlaneXEnd = edgeXDiff;
+
 
     for (int seg = 0; seg < screenWidth; ++seg)
     {
-        float currentScreenX = -edgeXDiff + (float)seg * columnWidth;
-        jadel::Vec2 unRotatedRayLine(unRotatedScreenStartClip.x + (float)seg * (screenPlaneWidth / (float)screenWidth), screenPlaneDist); // Can be modified, so x should not be set to currentScreenX
-        // unRotatedRayLine = clipVectorAtY(unRotatedRayLine, 1.0f);
-        jadel::Vec2 currentRayLine = cameraRotationMatrix.mul(unRotatedRayLine);
-        float rayXDir = currentRayLine.x > 0 ? 1.0f : -1.0f;
-        float rayYDir = currentRayLine.y > 0 ? 1.0f : -1.0f;
-        jadel::Vec2 clippedRaySegment(0, 0);
+        jadel::Vec2 unRotatedCamToScreenRay(unRotatedVirtualScreenStartClip.x + (float)seg * (screenPlaneWidth / (float)screenWidth), screenPlaneDist); // Can be modified, so x should not be set to currentScreenX
+        // unRotatedRayLine = clipSegmentFromLineAtY(unRotatedRayLine, 1.0f);
+        jadel::Vec2 camToScreenColumnVector = cameraRotationMatrix.mul(unRotatedCamToScreenRay);
+        jadel::Vec2 rayStartPos = camPos + camToScreenColumnVector;
 
-        // jadel::Vec2 unRotatedScreenClip = clipVectorAtY(unRotatedRayLine, defaultScreenPlane.y);
-        // jadel::Vec2 rotatedScreenClip = cameraRotationMatrix.mul(unRotatedScreenClip);
+        RayResult rayResult;
+        shootRay(rayStartPos, camToScreenColumnVector.normalize(), currentRayMaxDistance, &rayResult);
 
-        jadel::Vec2 rayStartPos = camPos + currentRayLine;
-        jadel::Vec2 rayMarchPos = rayStartPos;
+        /*       if (seg % 200 == 0 || seg == screenWidth - 1)
+               {
+                   minimap.pushLine(rayResult.start, rayResult.end, {1, 0, 1, 0});
+                   minimap.pushLine(camPos, rayResult.start, {1, 1, 0, 1});
 
-        for (int i = 0; i < MAX_RAY_DISTANCE; ++i)
+                   static jadel::Vec2 clipPointDim(0.1f, 0.1f);
+                   minimap.pushRect(rayResult.end - clipPointDim, rayResult.end + clipPointDim, {1, 1, 1, 0});
+                   if (seg == 0 || seg == screenWidth - 1)
+                   {
+                       minimap.pushLine(camPos, rayResult.end, {1, 1, 0, 0});
+                   }
+               }
+       */
+        if (rayResult.rayEndContent == 1)
         {
-            bool isVerticallyClipped = false;
-            bool isClippedOnCorner = false;
-            float RayEndDistToUpperSector = (float)((int)(rayMarchPos.y + 1.0f)) - rayMarchPos.y;
-            float rayEndDistToLowerSector = (float)(int)(rayMarchPos.y) - rayMarchPos.y;
-            float rayEndDistToRightSector = (float)((int)(rayMarchPos.x + 1.0f)) - rayMarchPos.x;
-            float rayEndDistToLeftSector = (float)((int)rayMarchPos.x) - rayMarchPos.x;
+            float dist = rayResult.length();
+            if (dist > 0)
+            {
+                static float defaultWallScale = 0.8f;
+                static float obliqueWallScale = 0.1f;
+                float cosWallAngle;
 
-            if (rayEndDistToLowerSector == 0.0f)
-                rayEndDistToLowerSector = -1.0f;
-            if (rayEndDistToLeftSector == 0.0f)
-                rayEndDistToLeftSector = -1.0f;
-
-            float rayEndDistToVerticalSector;
-            float rayEndDistToHorizontalSector;
-
-            /*
-            Cut a segment from a line whose slope is the same as the ray's,
-            and whose length covers the distance to the next sector.
-            */
-            if (currentRayLine.y > 0)
-            {
-                rayEndDistToVerticalSector = RayEndDistToUpperSector;
-            }
-            else
-            {
-                rayEndDistToVerticalSector = rayEndDistToLowerSector;
-            }
-            if (currentRayLine.x > 0)
-            {
-                rayEndDistToHorizontalSector = rayEndDistToRightSector;
-            }
-            else
-            {
-                rayEndDistToHorizontalSector = rayEndDistToLeftSector;
-            }
-
-            /*
-                Compare the length of the ray that clips with the next sector in the X-axis
-                with the one that clips with the Y-axis, choose the shorter one, and add it
-                to the existing ray
-            */
-            jadel::Vec2 verticallyClippedRay = clipVectorAtY(currentRayLine, rayEndDistToVerticalSector);
-            jadel::Vec2 horizontallyClippedRay = clipVectorAtX(currentRayLine, rayEndDistToHorizontalSector);
-
-            if (isVec2ALongerThanB(horizontallyClippedRay, verticallyClippedRay))
-            {
-                clippedRaySegment += verticallyClippedRay;
-                isVerticallyClipped = true;
-            }
-            else if (isVec2ALongerThanB(verticallyClippedRay, horizontallyClippedRay))
-            {
-                clippedRaySegment += horizontallyClippedRay;
-            }
-            else
-            {
-                isClippedOnCorner = true;
-            }
-
-            /*
-                Draw line representations for the rays on the minimap
-            */
-            jadel::Vec2 worldRay = rayStartPos + clippedRaySegment;
-            if (worldRay.x < 0 || worldRay.y < 0 || worldRay.x >= MAP_WIDTH || worldRay.y >= MAP_HEIGHT)
-                break;
-            if (seg % 200 == 0 || seg == screenWidth - 1)
-            {
-                jadel::Color lineColor;
-                if (seg == 0 || seg == screenWidth - 1 || seg == screenWidth / 2)
+                if (rayResult.isVerticallyClipped)
                 {
-                    lineColor = {1, 1, 0, 0};
+
+                    cosWallAngle = fabs(getCosBetweenVectors(rayResult.end - camPos, jadel::Vec2(1.0f, 0)));
                 }
                 else
                 {
-                    lineColor = {1, 0, 1, 0};
+                    cosWallAngle = fabs(getCosBetweenVectors(rayResult.end - camPos, jadel::Vec2(0, 1.0f)));
                 }
-                jadel::Vec2 rayLineStart = mapStart + rayStartPos * 0.05f;
-                jadel::Vec2 rayLineEnd = mapStart + worldRay * 0.05f;
 
-                pushRectRenderable({rayLineEnd.x - 0.005f, rayLineEnd.y - 0.005f, rayLineEnd.x + 0.005f, rayLineEnd.y + 0.005f}, {1, 1, 1, 0});
-                pushLineRenderable(rayLineStart, rayLineEnd, lineColor);
-                pushLineRenderable(mapStart + screenWorldStart * 0.05, mapStart + screenWorldEnd * 0.05, {1, 1, 0, 1});
-                // pushLineRenderable(rayLineStart, rayLineStart + rotatedRayVec * 0.05f, {1, 1, 0, 0});
+                jadel::Color defaultWallColor = {1, defaultWallScale, defaultWallScale, defaultWallScale};
+                float scale = jadel::lerp(obliqueWallScale, defaultWallScale, 1.0f - cosWallAngle);
+                static float ambientLight = 0;
+                float distanceSquared = (dist * dist) * 0.3;
+                jadel::Color wallColor = {defaultWallColor.a,
+                                          jadel::clampf(scale / distanceSquared, 0, scale) + ambientLight,
+                                          jadel::clampf(scale / distanceSquared, 0, scale) + ambientLight,
+                                          jadel::clampf(scale / distanceSquared, 0, scale) + ambientLight};
+                float currentScreenX = -edgeXDiff + (float)seg * columnWidth;
+                jadel::graphicsDrawRectRelative({currentScreenX, -1.0f / (dist), currentScreenX + columnWidth, 1.0f / (dist)}, wallColor);
             }
-
-            float xMargin = 0;
-            float yMargin = 0;
-
-            if (isClippedOnCorner)
-            {
-                xMargin = rayXDir * 0.0001f;
-                yMargin = rayYDir * 0.0001f;
-            }
-            else if (isVerticallyClipped)
-            {
-                yMargin = rayYDir * 0.0001f;
-            }
-            else
-            {
-                xMargin = rayXDir * 0.0001f;
-            }
-
-            int content = getSectorContent(worldRay.x + xMargin, worldRay.y + yMargin);
-            /*
-                If the ray hits a wall, draw it, and move on to the next ray.
-            */
-            if (content == 1)
-            {
-                float dist = clippedRaySegment.length();
-                if (dist > 0)
-                {
-                    static float defaultWallScale = 0.8f;
-                    static float obliqueWallScale = 0.1f;
-                    float cosWallAngle;
-
-                    if (isVerticallyClipped)
-                    {
-                         
-                        cosWallAngle = fabs(getCosBetweenVectors(worldRay - camPos, jadel::Vec2(1.0f, 0)));
-                    }
-                    else
-                    {
-                        cosWallAngle = fabs(getCosBetweenVectors(worldRay - camPos, jadel::Vec2(0, 1.0f)));
-                    }
-
-                    jadel::Color defaultWallColor = {1, defaultWallScale, defaultWallScale, defaultWallScale};
-                    float scale = jadel::lerp(obliqueWallScale, defaultWallScale, 1.0f - cosWallAngle);
-                    static float ambientLight = 0;
-                    float distanceSquared = (dist * dist) * 0.3;
-                    jadel::Color wallColor = {defaultWallColor.a,
-                                              jadel::clampf(scale / distanceSquared, 0, scale) + ambientLight,
-                                              jadel::clampf(scale / distanceSquared, 0, scale) + ambientLight,
-                                              jadel::clampf(scale / distanceSquared, 0, scale) + ambientLight};
-
-                    if (seg == screenWidth / 2)
-                    {
-                        //wallColor = {1, 1, 0, 0};
-                        jadel::message("%f\n", cosWallAngle);
-
-                    }
-                    
-                    jadel::graphicsDrawRectRelative({currentScreenX, -1.0f / (dist), currentScreenX + columnWidth, 1.0f / (dist)}, wallColor);
-                }
-                break;
-            }
-            rayMarchPos = worldRay;
         }
     }
+    minimap.pushLine(virtualScreenWorldStart, virtualScreenWorldEnd, {1, 0, 0, 1});
 
-    for (int y = 0; y < MAP_HEIGHT; ++y)
-    {
-        for (int x = 0; x < MAP_WIDTH; ++x)
+    /*
+        jadel::Mat3 viewRotationMatrix = getRotationMatrix(-camRotation);
+        float screenToScreenPlaneRatio = 1.0f / (screenPlaneWidth / 2.0f);
+        for (int a = 0; a < numActors; ++a)
         {
-            float squareDiameter = 0.05f;
-            float xStart = mapStart.x + x * squareDiameter;
-            float yStart = mapStart.y + y * squareDiameter;
-            jadel::Rectf dim = {xStart, yStart, xStart + squareDiameter, yStart + squareDiameter};
-            int content = getSectorContent(x, y);
-            static jadel::Color occupiedSectorColor = {0.7f, 0.3f, 0.3f, 0.3f};
-            static jadel::Color emptySectorColor = {0.7f, 0.2f, 0.2f, 0.2f};
-            jadel::Color sectorColor = content == 0 ? emptySectorColor : occupiedSectorColor;
-            // jadel::graphicsDrawRectRelative(dim, sectorColor);
-            pushRectRenderable(dim, sectorColor);
+            Actor *actor = &actors[a];
+            jadel::Vec2 translatedPosition = actor->pos - camPos;
+            jadel::Vec2 finalPosition = viewRotationMatrix.mul(translatedPosition);
+            finalPosition;
+
+            float dist = finalPosition.length();
+            float halfActorWidthOnScreen = (actor->dim.x1 * 0.5f) / dist;
+            float actorHeightOnScreen = (actor->dim.y1) / dist;
+            jadel::Rectf finalRect = {(finalPosition.x - halfActorWidthOnScreen) , -1.0f / dist, finalPosition.x + halfActorWidthOnScreen, -1.0f  / dist + actorHeightOnScreen};
+            jadel::graphicsDrawRectRelative(finalRect, {1, 0.7, 0, 0});
+            jadel::Vec2 actorMapPos = mapStart + jadel::Vec2(actor->pos.x * 0.05f, actor->pos.y * 0.05f);
+            pushRectRenderable({actorMapPos.x - actor->dim.x1 * 0.05f, actorMapPos.y - actor->dim.x1 * 0.05f, actorMapPos.x + actor->dim.x1 * 0.05f, actorMapPos.y + actor->dim.x1 * 0.05f}, {0.7f, 0, 0, 1});
+        }
+        */
+
+    if (showMiniMap)
+    {
+        for (int y = 0; y < MAP_HEIGHT; ++y)
+        {
+            for (int x = 0; x < MAP_WIDTH; ++x)
+            {
+                int content = getSectorContent(x, y);
+                static jadel::Color occupiedSectorColor = {0.7f, 0.3f, 0.3f, 0.3f};
+                static jadel::Color emptySectorColor = {0.7f, 0.2f, 0.2f, 0.2f};
+                jadel::Color sectorColor = content == 0 ? emptySectorColor : occupiedSectorColor;
+                minimap.pushRect({(float)x, (float)y, x + 1.0f, y + 1.0f}, sectorColor);
+                // jadel::graphicsDrawRectRelative(dim, sectorColor);
+                //            pushRectRenderable(dim, sectorColor);
+            }
+        }
+        jadel::Vec2 mapDim((float)MAP_WIDTH * 0.05f, (float)MAP_HEIGHT * 0.05f);
+        jadel::Vec2 camMapPos = minimapStart + jadel::Vec2(camPos.x * 0.05f, camPos.y * 0.05f);
+        //  pushRectRenderable({camMapPos.x - 0.005f, camMapPos.y - 0.005f, camMapPos.x + 0.005f, camMapPos.y + 0.005f}, {0.7f, 1, 0, 0});
+        // jadel::message("Minimap rects: %d, lines: %d\n", minimap.numRects, minimap.numLines);
+        for (int i = 0; i < minimap.numRects; ++i)
+        {
+            RectRenderable renderable = minimap.rects[i];
+            jadel::Rectf rect = renderable.rect;
+            jadel::Rectf perspectiveRect(
+                minimap.findPointOnScreen(rect.getPoint0()),
+                minimap.findPointOnScreen(rect.getPoint1()));
+            jadel::graphicsDrawRectRelative(perspectiveRect, renderable.color);
+        }
+
+        for (int i = 0; i < minimap.numLines; ++i)
+        {
+            Line renderable = minimap.lines[i];
+            jadel::Vec2 start = renderable.start;
+            jadel::Vec2 end = renderable.end;
+            jadel::Vec2 perspectiveStart = minimap.findPointOnScreen(start);
+            jadel::Vec2 perspectiveEnd = minimap.findPointOnScreen(end);
+
+            jadel::graphicsDrawLineRelative(perspectiveStart, perspectiveEnd, renderable.color);
         }
     }
-    jadel::Vec2 mapDim((float)MAP_WIDTH * 0.05f, (float)MAP_HEIGHT * 0.05f);
-    jadel::Vec2 camMapPos = mapStart + jadel::Vec2(camPos.x * 0.05f, camPos.y * 0.05f);
-    pushRectRenderable({camMapPos.x - 0.005f, camMapPos.y - 0.005f, camMapPos.x + 0.005f, camMapPos.y + 0.005f}, {0.7f, 1, 0, 0});
-    for (int i = 0; i < numRectRenderables; ++i)
-    {
-        jadel::graphicsDrawRectRelative(rectRenderables[i].rect, rectRenderables[i].color);
-    }
-
-    for (int i = 0; i < numLineRenderables; ++i)
-    {
-        jadel::graphicsDrawLineRelative(lineRenderables[i].start, lineRenderables[i].end, lineRenderables[i].color);
-    }
+    if (collision)
+        jadel::graphicsDrawRectRelative(-0.8f, -0.8f, -0.7f, -0.7f, {1, 1, 0, 0});
 }
 
+float tickAccumulator = 0;
+int numTicks = 0;
 void tick()
 {
 
-    static float standardSpeed = 1.0f;
-    static float runningSpeed = 2.3f;
-    static float currentSpeed = standardSpeed;
-    static float camRotationSpeed = 140.0f;
+    tickAccumulator += frameTime;
+
+    if (numTicks < 22 && tickAccumulator > 1.0f)
+    {
+        ++numTicks;
+        tickAccumulator -= 1.0f;
+        DEBUGPushInt(numTicks, "Ticker");
+        DEBUGPrint("Ticker");
+        //DEBUGClear("Ticker");
+    }
+    player.actor.vel *= 0;
     // jadel::message("sc W: %f, sc D: %f\n", screenPlaneWidth, screenPlaneDist);
+    minimap.clear();
+    if (jadel::inputIsKeyTyped(jadel::KEY_PAGEUP))
+    {
+        ++currentRayMaxDistance;
+    }
+
+    if (jadel::inputIsKeyTyped(jadel::KEY_PAGEDOWN))
+    {
+        --currentRayMaxDistance;
+        if (currentRayMaxDistance < 1)
+            currentRayMaxDistance = 1;
+    }
+    if (jadel::inputIsKeyTyped(jadel::KEY_TAB))
+    {
+        showMiniMap = !showMiniMap;
+    }
     if (jadel::inputIsKeyTyped(jadel::KEY_SHIFT))
     {
-        currentSpeed = runningSpeed;
+        player.actor.movementSpeed = runningMovementSpeed;
     }
     else if (jadel::inputIsKeyReleased(jadel::KEY_SHIFT))
     {
-        currentSpeed = standardSpeed;
+        player.actor.movementSpeed = standardMovementSpeed;
     }
     if (jadel::inputIsKeyPressed(jadel::KEY_X))
     {
@@ -354,72 +521,248 @@ void tick()
 
     if (jadel::inputIsKeyPressed(jadel::KEY_V))
     {
-        screenPlaneWidth += 0.8f * frameTime;
+        screenPlaneWidth += (0.8f * screenPlaneWidth) * frameTime;
     }
     if (jadel::inputIsKeyPressed(jadel::KEY_C))
     {
-        screenPlaneWidth -= 0.8f * frameTime;
+        screenPlaneWidth -= (0.8f * screenPlaneWidth) * frameTime;
     }
     if (jadel::inputIsKeyPressed(jadel::KEY_LEFT))
     {
-        camRotation += camRotationSpeed * frameTime;
+        rotateActorTowards(&player.actor, -1);
+        // player.actor.facingAngle += player.turningSpeed * frameTime;
     }
 
     if (jadel::inputIsKeyPressed(jadel::KEY_RIGHT))
     {
-        camRotation -= camRotationSpeed * frameTime;
+        rotateActorTowards(&player.actor, 1);
+        // player.actor.facingAngle -= player.turningSpeed * frameTime;
     }
 
-    while (camRotation < 0)
-        camRotation += 360.0f;
-    while (camRotation > 360.0f)
-        camRotation -= 360.0f;
+    camRotation = player.actor.facingAngle;
 
-    float cRadians = TO_RADIANS(camRotation);
-    cameraRotationMatrix = {
-        cosf(cRadians), sinf(cRadians), 0,
-        -sinf(cRadians), cosf(cRadians), 0,
-        0, 0, 1};
-
-    float deg90ToRad = TO_RADIANS(90);
-
-    jadel::Mat3 rotate90DegMatrix = {
-        cosf(deg90ToRad), sinf(deg90ToRad), 0,
-        -sinf(deg90ToRad), cosf(deg90ToRad), 0,
-        0, 0, 1};
+    cameraRotationMatrix = getRotationMatrix(camRotation);
+    jadel::Mat3 rotate90DegMatrix = getRotationMatrix(90);
 
     jadel::Vec2 forward = cameraRotationMatrix.mul(jadel::Vec2(0, 1.0f));
     jadel::Vec2 left = rotate90DegMatrix.mul(forward);
 
     if (jadel::inputIsKeyPressed(jadel::KEY_A))
     {
-        camPos += left * currentSpeed * frameTime;
+        player.actor.vel += left * player.actor.movementSpeed;
     }
     if (jadel::inputIsKeyPressed(jadel::KEY_D))
     {
-        camPos -= left * currentSpeed * frameTime;
+        player.actor.vel -= left * player.actor.movementSpeed;
     }
     if (jadel::inputIsKeyPressed(jadel::KEY_S))
     {
-        camPos -= forward * currentSpeed * frameTime;
+        player.actor.vel -= forward * player.actor.movementSpeed;
     }
     if (jadel::inputIsKeyPressed(jadel::KEY_W))
     {
-        camPos += forward * currentSpeed * frameTime;
+        player.actor.vel += forward * player.actor.movementSpeed;
     }
 
-    if (lastCamPos != camPos)
+    float playerRadius = 0.3f;
+
+    jadel::Vec2 frameCorrectVel = player.actor.vel * frameTime;
+    jadel::Vec2 playerNextPos = player.actor.pos + frameCorrectVel;
+
+    jadel::Vec2 dir = player.actor.vel.normalize();
+    float dirAngle = 360.0f - getAngleOfVec2(dir);
+    jadel::Mat3 playerRotation = getRotationMatrix(player.actor.facingAngle);
+    jadel::Mat3 movementDirRotation = getRotationMatrix(dirAngle);
+
+    jadel::Vec2 playerLeftPoint;
+    jadel::Vec2 playerRightPoint;
+
+    if (dir.length() > 0)
     {
-        //jadel::message("X: %f | Y: %f\n", camPos.x, camPos.y);
+        playerLeftPoint = player.actor.pos + movementDirRotation.mul(jadel::Vec2(-0.3f, 0.3f));
+        playerRightPoint = player.actor.pos + movementDirRotation.mul(jadel::Vec2(0.3f, 0.3f));
     }
+    else
+    {
+        playerLeftPoint = player.actor.pos + playerRotation.mul(jadel::Vec2(-0.3f, 0));
+        playerRightPoint = player.actor.pos + playerRotation.mul(jadel::Vec2(0.3f, 0));
+    }
+    collision = false;
+    if (player.actor.vel.length() > 0)
+    {
+        RayResult movementRay;
+        RayResult movementRayLeft;
+        RayResult movementRayRight;
+        shootRay(player.actor.pos + dir * playerRadius, frameCorrectVel, ceilf(frameCorrectVel.length()) + 2.0f, &movementRay);
+        shootRay(playerLeftPoint, frameCorrectVel, ceilf(frameCorrectVel.length()), &movementRayLeft);
+        shootRay(playerRightPoint, frameCorrectVel, ceilf(frameCorrectVel.length()), &movementRayRight);
+
+        RayResult rayResults[3] = {movementRay, movementRayLeft, movementRayRight};
+        float movementDirX = player.actor.vel.x > 0 ? 1.0f : -1.0f;
+        float movementDirY = player.actor.vel.y > 0 ? 1.0f : -1.0f;
+
+        jadel::Color collisionColor = {1, 1, 0, 0};
+        jadel::Color noCollisionColor = {1, 0, 1, 0};
+        jadel::Color movementLineColors[3] = {noCollisionColor, noCollisionColor, noCollisionColor};
+        int numVerticalClips = 0;
+
+        for (int i = 0; i < 3; ++i)
+        {
+            RayResult *ray = &rayResults[i];
+            if (ray->isVerticallyClipped)
+                ++numVerticalClips;
+        }
+
+        int shortestRayIndex = -1;
+
+        for (int i = 0; i < 3; ++i)
+        {
+            RayResult *ray = &rayResults[i];
+            if (numVerticalClips >= 2)
+            {
+                if (!ray->isVerticallyClipped)
+                    continue;
+            }
+            else
+            {
+                if (ray->isVerticallyClipped)
+                    continue;
+            }
+            if (ray->rayEndContent == 1)
+            {
+                if (shortestRayIndex == -1 || rayResults[shortestRayIndex].length() > ray->length())
+                {
+                    shortestRayIndex = i;
+                }
+            }
+        }
+
+        if (shortestRayIndex != -1)
+        {
+            RayResult *shortestRay = &rayResults[shortestRayIndex];
+            jadel::Vec2 rayVector = shortestRay->rayVector();
+            if (shortestRay->isVerticallyClipped)
+            {
+                if (fabs(rayVector.y) <= fabs(frameCorrectVel.y - 0.001f))
+                {
+                    frameCorrectVel.y = rayVector.y - movementDirY * 0.001;
+                    movementLineColors[shortestRayIndex] = collisionColor;
+                }
+            }
+            else
+            {
+                if (fabs(rayVector.x) <= fabs(frameCorrectVel.x - 0.001))
+                {
+                    frameCorrectVel.x = rayVector.x - movementDirX * 0.001;
+                    movementLineColors[shortestRayIndex] = collisionColor;
+                }
+            }
+        }
+
+        player.actor.pos += frameCorrectVel;
+        for (int i = 0; i < 3; ++i)
+            minimap.pushLine(rayResults[i].start, rayResults[i].end, movementLineColors[i]);
+    }
+    /*
+
+    */
+
+    /*minimap.pushLine(playerLeftPoint, movementRayLeft.end, {1, 1, 0, 0});
+    minimap.pushLine(player.actor.pos, movementRay.end, {1, 1, 0, 0});
+    minimap.pushLine(playerRightPoint, movementRayRight.end, {1, 1, 0, 0});
+    jadel::Vec2 modifiedXMovementVec = player.actor.vel;
+    jadel::Vec2 modifiedYMovementVec = player.actor.vel;
+    bool verticalCollision = false;
+    bool horizontalCollision = false;
+    for (int i = 0; i < 3; ++i)
+    {
+        RayResult ray = rayResults[i];
+        if (ray.rayEndContent)
+        {
+            jadel::Vec2 rayVector = ray.rayVector();
+            if (ray.isVerticallyClipped)
+            {
+                jadel::Vec2 distanceToYCollision;
+                distanceToYCollision = rayVector - clipSegmentFromLineAtY(rayVector, 0.3f);
+                if (isVec2ALongerThanB(player.actor.vel, distanceToYCollision))
+                {
+
+                    if (!collision || modifiedYMovementVec.length() > distanceToYCollision.length())
+                    {
+                        modifiedYMovementVec = distanceToYCollision;
+                    }
+                    verticalCollision = true;
+                }
+            }
+            else
+            {
+                jadel::Vec2 distanceToXCollision = rayVector - clipSegmentFromLineAtX(rayVector, 0.3f);
+                horizontalCollision = true;
+                if (isVec2ALongerThanB(player.actor.vel, distanceToXCollision))
+                {
+
+                    if (!collision || modifiedXMovementVec.length() > distanceToXCollision.length())
+                    {
+                        modifiedXMovementVec = distanceToXCollision;
+                    }
+                    horizontalCollision = true;
+                }
+            }
+        }
+    }
+    if (verticalCollision)
+    {
+        player.actor.vel.x = 0;
+        playerNextPos.y = player.actor.pos.y + modifiedYMovementVec.y;
+    }
+    if (horizontalCollision)
+    {
+        player.actor.vel.y = 0;
+        playerNextPos.x = player.actor.pos.x + modifiedXMovementVec.x;
+    }*/
+    // jadel::message("Player angle: %f\n", player.actor.facingAngle);
+    camPos = player.actor.pos;
 
     lastCamPos = camPos;
 
     render();
 }
 
-void init()
+bool createDefaultActor(float x, float y, Actor *target)
 {
+    if (!target)
+        return false;
+    target->dim = {0, 0, 0.3f, 0.7f};
+    target->pos = jadel::Vec2(x, y);
+    target->facingAngle = 90.0f;
+    target->turningSpeed = 140.0f;
+    target->movementSpeed = 1.2f;
+    return true;
+}
+
+void pushActor(float x, float y, jadel::Rectf dim)
+{
+    if (numActors >= maxActors)
+        return;
+    Actor *actor = &actors[numActors++];
+    createDefaultActor(x, y, actor);
+    actor->dim = dim;
+}
+
+void init()
+{   
+    
+    maxActors = 100;
+    numActors = 0;
+    actors = (Actor *)jadel::memoryReserve(maxActors * sizeof(Actor));
+    pushActor(2.5f, 3.5f, {0, 0, 0.3f, 0.7f});
+    pushActor(5.5f, 5.5f, {0, 0, 0.4f, 0.6f});
+
+    player.actor.pos = jadel::Vec2(1.5f, 1.5f);
+    player.actor.movementSpeed = standardMovementSpeed;
+    player.actor.turningSpeed = 140.0f;
+    camPos = player.actor.pos;
+    camRotation = player.actor.facingAngle;
     for (int y = 0; y < MAP_HEIGHT; ++y)
     {
         for (int x = 0; x < MAP_WIDTH; ++x)
@@ -430,6 +773,14 @@ void init()
         }
         jadel::message("\n");
     }
+
+    minimap.maxRects = 500;
+    minimap.maxLines = 500;
+    minimap.rects = (RectRenderable *)jadel::memoryReserve(minimap.maxRects * sizeof(RectRenderable));
+    minimap.lines = (Line *)jadel::memoryReserve(minimap.maxLines * sizeof(Line));
+    minimap.scale = 0.05f;
+    minimap.screenStart = jadel::Vec2(0.2f, 0);
+    minimap.clear();
 }
 
 int JadelMain()
@@ -441,7 +792,13 @@ int JadelMain()
     }
     jadel::allocateConsole();
     srand(time(NULL));
-
+#ifdef DEBUG
+    if (!DEBUGInit())
+    {
+        jadel::message("[ERROR] Debug Init failed\n");
+        return 0;
+    }
+#endif
     jadel::Window window;
     jadel::windowCreate(&window, "RayCaster", screenWidth, screenHeight);
     jadel::Surface winSurface;
@@ -453,7 +810,6 @@ int JadelMain()
     jadel::graphicsClearTargetSurface();
 
     init();
-    Timer frameTimer;
     frameTimer.start();
     uint32 elapsedInMillis = 0;
     uint32 minFrameTime = 1000 / 165;
