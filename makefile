@@ -19,11 +19,11 @@ SCRDIR=src
 .PHONY:
 all: rc
 
-withjadel:
+withjadel: $(debugobjects)
 	(cd W:/jadel2 && make clean && make)
 	copy W:\jadel2\export\lib\jadel.dll bin\jadel.dll
-	$(CC) /c /Zi /EHsc /Iinclude /IW:/jadel2/export/include /std:c++latest ./src/*.cpp /Foobj/ 
-	$(CC) /Zi obj/*.obj W:/jadel2/export/lib/jadelmain.lib W:/jadel2/export/lib/jadel.lib /Febin/$(NAME).exe /link /SUBSYSTEM:WINDOWS
+	$(CC) /c /Zi $(DEBUGDEFS) /EHsc /Iinclude /IW:/jadel2/export/include /std:c++latest ./src/*.cpp /Foobj/ 
+	$(CC) /Zi $^ W:/jadel2/export/lib/jadelmain.lib W:/jadel2/export/lib/jadel.lib /Febin/$(NAME).exe /link /SUBSYSTEM:WINDOWS
 
 rc: $(debugobjects)
 	$(CC) /Zi $^ W:/jadel2/export/lib/jadelmain.lib W:/jadel2/export/lib/jadel.lib /Febin/$(NAME)DEBUG.exe /link /SUBSYSTEM:WINDOWS
@@ -31,17 +31,17 @@ rc: $(debugobjects)
 release: $(releaseobjects)
 	$(CC) /Zi $^ W:/jadel2/export/lib/jadelmain.lib W:/jadel2/export/lib/jadel.lib /Febin/$(NAME).exe /link /SUBSYSTEM:WINDOWS
 
-dwithjadel:
+rwithjadel: $(releaseobjects)
 	(cd W:/jadel2 && make clean && make)
 	copy W:\jadel2\export\lib\jadel.dll bin\jadel.dll
-	$(CC) /c /Zi /EHsc /Iinclude /IW:/jadel2/export/include /std:c++latest ./src/*.cpp /Foobj/ 
-	$(CC) /Zi /DDEBUG obj/*.obj W:/jadel2/export/lib/jadelmain.lib W:/jadel2/export/lib/jadel.lib /Febin/$(NAME)DEBUG.exe /link /SUBSYSTEM:WINDOWS
+	$(CC) /c /Zi $(RELEASEDEFS) /EHsc /Iinclude /IW:/jadel2/export/include /std:c++latest ./src/*.cpp /Foobj/
+	$(CC) /Zi $^ W:/jadel2/export/lib/jadelmain.lib W:/jadel2/export/lib/jadel.lib /Febin/$(NAME)DEBUG.exe /link /SUBSYSTEM:WINDOWS
 
 obj/debug/%.obj: src/%.cpp
 	$(CC) /c /Zi $(DEBUGDEFS) /EHsc /Iinclude $(CFLAGS) /std:c++latest $^ /Foobj/debug/
 
 obj/release/%.obj: src/%.cpp
-	$(CC) /c /Zi $(RELEASEDEFSDEFS) /EHsc /Iinclude $(CFLAGS) /std:c++latest $^ /Foobj/release/
+	$(CC) /c /Zi $(RELEASEDEFS) /EHsc /Iinclude $(CFLAGS) /std:c++latest $^ /Foobj/release/
 copyjadel:
 	$(CC)  /c /Zi /EHsc /Iinclude /IW:/jadel2/export/include /std:c++latest ./src/*.cpp /Foobj/ 
 	$(CC)  /Zi obj/*.obj W:/jadel2/export/lib/jadelmain.lib W:/jadel2/export/lib/jadel.lib /Febin/$(NAME).exe /link /SUBSYSTEM:WINDOWS
