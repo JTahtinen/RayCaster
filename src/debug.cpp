@@ -2,7 +2,7 @@
 
 #ifdef DEBUG
 #define NUM_INITIAL_DEBUG_DATA_PER_TYPE (20)
-#define MAX_REGISTERED_DEBUG_DATA (200)
+#define NUM_INITIAL_REGISTERED_DEBUG_DATA (50)
 
 static int numRegisteredIdentifiers = 0;
 static int poolSize = 0;
@@ -37,32 +37,32 @@ bool _DEBUGSetPoolSize(int newSize)
     int sizeDiff = newSize - poolSize;
     jadel::Vector<int> *newIntVectorPool;
     jadel::Vector<float> *newFloatVectorPool;
+    newIntVectorPool = (jadel::Vector<int> *)jadel::memoryReserve(newSize * sizeof(jadel::Vector<int>));
+    newFloatVectorPool = (jadel::Vector<float> *)jadel::memoryReserve(newSize * sizeof(jadel::Vector<float>));
+    if (!newIntVectorPool || !newFloatVectorPool)
+    {
+        if (poolSize != 0)
+            debugIdentifierPool.freeVector();
+        
+        jadel::memoryFree(debugIntVectorPool);
+        jadel::memoryFree(debugFloatVectorPool);
+        return false;
+    }
     if (poolSize == 0)
     {
         if (!jadel::vectorInit(newSize, &debugIdentifierPool))
             return false;
-        newIntVectorPool = (jadel::Vector<int> *)jadel::memoryReserve(newSize * sizeof(jadel::Vector<int>));
-        newFloatVectorPool = (jadel::Vector<float> *)jadel::memoryReserve(newSize * sizeof(jadel::Vector<float>));
-        if (!newIntVectorPool || !newFloatVectorPool)
-        {
-            jadel::memoryFree(debugIntVectorPool);
-            jadel::memoryFree(debugFloatVectorPool);
-            debugIdentifierPool.freeVector();
-            return false;
-        }
-    }
-    else
-    {
-        int numElementsToCopy = poolSize;
-        if (sizeDiff < 0)
-        {
-            numElementsToCopy = newSize;
-            _DEBUGFreeRightFromIndexInclusive(poolSize - newSize - 1);
-        }
-        memmove(newIntVectorPool, debugIntVectorPool, numElementsToCopy * sizeof(jadel::Vector<int> *));
-        memmove(newFloatVectorPool, debugFloatVectorPool, numElementsToCopy * sizeof(jadel::Vector<float> *));
     }
 
+    int numElementsToCopy = poolSize;
+    if (sizeDiff < 0)
+    {
+        numElementsToCopy = newSize;
+        _DEBUGFreeRightFromIndexInclusive(poolSize - newSize - 1);
+    }
+    memmove(newIntVectorPool, debugIntVectorPool, numElementsToCopy * sizeof(jadel::Vector<int>));
+    memmove(newFloatVectorPool, debugFloatVectorPool, numElementsToCopy * sizeof(jadel::Vector<float>));
+    jadel::message("[DEBUG] Copied %d elements from old pool to new pool\n",numElementsToCopy);
     size_t numInitializedIntVectors = 0;
     size_t numInitializedFloatVectors = 0;
     size_t numInitializedStrings = 0;
@@ -86,6 +86,7 @@ bool _DEBUGSetPoolSize(int newSize)
     debugIntVectorPool = newIntVectorPool;
     debugFloatVectorPool = newFloatVectorPool;
     poolSize = newSize;
+    jadel::message("[DEBUG] New pool size is %d\n", poolSize);
     return true;
 fail:
     for (size_t i = 0; i < numInitializedStrings; ++i)
@@ -114,19 +115,20 @@ bool _DEBUGInit()
     {
         return false;
     }
-    bool result = _DEBUGSetPoolSize(MAX_REGISTERED_DEBUG_DATA);
+    bool result = _DEBUGSetPoolSize(NUM_INITIAL_REGISTERED_DEBUG_DATA);
 
     return result;
 }
 
 bool _DEBUGDoublePoolSize()
 {
+    jadel::message("[DEBUG] Doubling pool size\n");
     return _DEBUGSetPoolSize(poolSize * 2);
 }
 
 void _DEBUGQuit()
 {
-    for (size_t i = 0; i < MAX_REGISTERED_DEBUG_DATA; ++i)
+    for (size_t i = 0; i < NUM_INITIAL_REGISTERED_DEBUG_DATA; ++i)
     {
         debugIntVectorPool[i].freeVector();
         debugFloatVectorPool[i].freeVector();

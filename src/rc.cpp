@@ -480,9 +480,6 @@ void tick()
     {
         ++numTicks;
         tickAccumulator -= 1.0f;
-        DEBUGPushInt(numTicks, "Ticker");
-        DEBUGPrint("Ticker");
-        //DEBUGClear("Ticker");
     }
     player.actor.vel *= 0;
     // jadel::message("sc W: %f, sc D: %f\n", screenPlaneWidth, screenPlaneDist);
