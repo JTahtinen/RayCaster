@@ -6,7 +6,7 @@ _DEPS=include
 DEPS=$(patsubst %,$(IDIR)/%,$(_DEPS))
 CFLAGS=/I$(IDIR) 
 DEBUGDEFS=/DDEBUG
-RELEASEDEFS=/DRELEASE
+RELEASEDEFS=/DRELEASE /O2
 _OBJ=*.obj
 OBJ=$($(wildcard patsubst %,$(ODIR)/%,$(_OBJ)))
 
@@ -19,11 +19,18 @@ SCRDIR=src
 .PHONY:
 all: rc
 
+withjadeldebug: $(debugobjects)
+	(cd W:/jadel2 && make clean && make debug)
+	copy W:\jadel2\export\lib\jadel.dll bin\jadel.dll
+	$(CC) /c /Zi $(DEBUGDEFS) /EHsc /Iinclude /IW:/jadel2/export/include /std:c++latest ./src/*.cpp /Foobj/ 
+	$(CC) /Zi $^ W:/jadel2/export/lib/jadelmain.lib W:/jadel2/export/lib/jadel.lib /Febin/$(NAME)DEBUG.exe /link /SUBSYSTEM:WINDOWS
+
 withjadel: $(debugobjects)
 	(cd W:/jadel2 && make clean && make)
 	copy W:\jadel2\export\lib\jadel.dll bin\jadel.dll
 	$(CC) /c /Zi $(DEBUGDEFS) /EHsc /Iinclude /IW:/jadel2/export/include /std:c++latest ./src/*.cpp /Foobj/ 
-	$(CC) /Zi $^ W:/jadel2/export/lib/jadelmain.lib W:/jadel2/export/lib/jadel.lib /Febin/$(NAME).exe /link /SUBSYSTEM:WINDOWS
+	$(CC) /Zi $^ W:/jadel2/export/lib/jadelmain.lib W:/jadel2/export/lib/jadel.lib /Febin/$(NAME)DEBUG.exe /link /SUBSYSTEM:WINDOWS
+
 
 rc: $(debugobjects)
 	$(CC) /Zi $^ W:/jadel2/export/lib/jadelmain.lib W:/jadel2/export/lib/jadel.lib /Febin/$(NAME)DEBUG.exe /link /SUBSYSTEM:WINDOWS
