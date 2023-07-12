@@ -7,6 +7,9 @@
 #define TO_RADIANS(deg) (deg * MATH_PI / 180.0)
 #define TO_DEGREES(rad) (rad * (180.0 / MATH_PI))
 
+int myArgc;
+char **myArgv;
+
 static int screenWidth = 1280;
 static int screenHeight = 720;
 
@@ -42,11 +45,16 @@ struct Player
     Actor actor;
 };
 
+struct GameState
+{
+    Player player;
+};
+
+static GameState currentGameState;
+
 Actor *actors;
 size_t numActors;
 size_t maxActors;
-
-static Player player;
 
 struct Line
 {
@@ -326,7 +334,8 @@ float getAngleOfVec2(jadel::Vec2 vec)
 }
 
 bool collision = false;
-
+static float internalHorizontalResolution = screenWidth;
+static int resolutionDivider = 1;
 void render()
 {
     jadel::graphicsClearTargetSurface();
@@ -337,8 +346,9 @@ void render()
 
     minimap.pushRect(jadel::Rectf(camPos - camPosMapDim, camPos + camPosMapDim), {1, 1, 0, 0});
 
+    internalHorizontalResolution = screenWidth / resolutionDivider;
     const float edgeXDiff = 1.0f;
-    float columnWidth = (2.0f * edgeXDiff) / (float)screenWidth;
+    float columnWidth = (2.0f * edgeXDiff) / (float)internalHorizontalResolution;
     static jadel::Vec2 minimapStart(0.2f, 0);
     jadel::Vec2 minimapCameraStart = minimapStart + camPos * 0.05f;
     jadel::Vec2 unRotatedVirtualScreenStartClip(-screenPlaneWidth * 0.5f, screenPlaneDist);
@@ -347,10 +357,9 @@ void render()
     jadel::Vec2 virtualScreenWorldEnd = camPos + cameraRotationMatrix.mul(unRotatedVirtualScreenEndClip);
     float screenPlaneXEnd = edgeXDiff;
 
-
-    for (int seg = 0; seg < screenWidth; ++seg)
+    for (int seg = 0; seg < internalHorizontalResolution; ++seg)
     {
-        jadel::Vec2 unRotatedCamToScreenRay(unRotatedVirtualScreenStartClip.x + (float)seg * (screenPlaneWidth / (float)screenWidth), screenPlaneDist); // Can be modified, so x should not be set to currentScreenX
+        jadel::Vec2 unRotatedCamToScreenRay(unRotatedVirtualScreenStartClip.x + (float)seg * (screenPlaneWidth / (float)internalHorizontalResolution), screenPlaneDist); // Can be modified, so x should not be set to currentScreenX
         // unRotatedRayLine = clipSegmentFromLineAtY(unRotatedRayLine, 1.0f);
         jadel::Vec2 camToScreenColumnVector = cameraRotationMatrix.mul(unRotatedCamToScreenRay);
         jadel::Vec2 rayStartPos = camPos + camToScreenColumnVector;
@@ -358,19 +367,19 @@ void render()
         RayResult rayResult;
         shootRay(rayStartPos, camToScreenColumnVector.normalize(), currentRayMaxDistance, &rayResult);
 
-        /*       if (seg % 200 == 0 || seg == screenWidth - 1)
-               {
-                   minimap.pushLine(rayResult.start, rayResult.end, {1, 0, 1, 0});
-                   minimap.pushLine(camPos, rayResult.start, {1, 1, 0, 1});
+        if (seg % 200 == 0 || seg == internalHorizontalResolution - 1)
+        {
+            minimap.pushLine(rayResult.start, rayResult.end, {1, 0, 1, 0});
+            minimap.pushLine(camPos, rayResult.start, {1, 1, 0, 1});
 
-                   static jadel::Vec2 clipPointDim(0.1f, 0.1f);
-                   minimap.pushRect(rayResult.end - clipPointDim, rayResult.end + clipPointDim, {1, 1, 1, 0});
-                   if (seg == 0 || seg == screenWidth - 1)
-                   {
-                       minimap.pushLine(camPos, rayResult.end, {1, 1, 0, 0});
-                   }
-               }
-       */
+            static jadel::Vec2 clipPointDim(0.1f, 0.1f);
+            minimap.pushRect(rayResult.end - clipPointDim, rayResult.end + clipPointDim, {1, 1, 1, 0});
+            if (seg == 0 || seg == internalHorizontalResolution - 1)
+            {
+                minimap.pushLine(camPos, rayResult.end, {1, 1, 0, 0});
+            }
+        }
+
         if (rayResult.rayEndContent == 1)
         {
             float dist = rayResult.length();
@@ -395,9 +404,9 @@ void render()
                 static float ambientLight = 0;
                 float distanceSquared = (dist * dist) * 0.3;
                 jadel::Color wallColor = {defaultWallColor.a,
+                                          jadel::clampf(scale / distanceSquared, 0, scale) + ambientLight + 0.2f,
                                           jadel::clampf(scale / distanceSquared, 0, scale) + ambientLight,
-                                          jadel::clampf(scale / distanceSquared, 0, scale) + ambientLight,
-                                          jadel::clampf(scale / distanceSquared, 0, scale) + ambientLight};
+                                          jadel::clampf(scale / distanceSquared, 0, scale) + ambientLight + 0.2f};
                 float currentScreenX = -edgeXDiff + (float)seg * columnWidth;
                 jadel::graphicsDrawRectRelative({currentScreenX, -1.0f / (dist), currentScreenX + columnWidth, 1.0f / (dist)}, wallColor);
             }
@@ -469,106 +478,17 @@ void render()
         jadel::graphicsDrawRectRelative(-0.8f, -0.8f, -0.7f, -0.7f, {1, 1, 0, 0});
 }
 
-float tickAccumulator = 0;
-int numTicks = 0;
-void tick()
+jadel::Vec2 frameCorrectVel;
+
+void collisionCheck()
 {
-
-    tickAccumulator += frameTime;
-
-    if (numTicks < 22 && tickAccumulator > 1.0f)
-    {
-        ++numTicks;
-        tickAccumulator -= 1.0f;
-    }
-    player.actor.vel *= 0;
-    // jadel::message("sc W: %f, sc D: %f\n", screenPlaneWidth, screenPlaneDist);
-    minimap.clear();
-    if (jadel::inputIsKeyTyped(jadel::KEY_PAGEUP))
-    {
-        ++currentRayMaxDistance;
-    }
-
-    if (jadel::inputIsKeyTyped(jadel::KEY_PAGEDOWN))
-    {
-        --currentRayMaxDistance;
-        if (currentRayMaxDistance < 1)
-            currentRayMaxDistance = 1;
-    }
-    if (jadel::inputIsKeyTyped(jadel::KEY_TAB))
-    {
-        showMiniMap = !showMiniMap;
-    }
-    if (jadel::inputIsKeyTyped(jadel::KEY_SHIFT))
-    {
-        player.actor.movementSpeed = runningMovementSpeed;
-    }
-    else if (jadel::inputIsKeyReleased(jadel::KEY_SHIFT))
-    {
-        player.actor.movementSpeed = standardMovementSpeed;
-    }
-    if (jadel::inputIsKeyPressed(jadel::KEY_X))
-    {
-        screenPlaneDist += 0.8f * frameTime;
-    }
-    if (jadel::inputIsKeyPressed(jadel::KEY_Z))
-    {
-        screenPlaneDist -= 0.8f * frameTime;
-    }
-
-    if (jadel::inputIsKeyPressed(jadel::KEY_V))
-    {
-        screenPlaneWidth += (0.8f * screenPlaneWidth) * frameTime;
-    }
-    if (jadel::inputIsKeyPressed(jadel::KEY_C))
-    {
-        screenPlaneWidth -= (0.8f * screenPlaneWidth) * frameTime;
-    }
-    if (jadel::inputIsKeyPressed(jadel::KEY_LEFT))
-    {
-        rotateActorTowards(&player.actor, -1);
-        // player.actor.facingAngle += player.turningSpeed * frameTime;
-    }
-
-    if (jadel::inputIsKeyPressed(jadel::KEY_RIGHT))
-    {
-        rotateActorTowards(&player.actor, 1);
-        // player.actor.facingAngle -= player.turningSpeed * frameTime;
-    }
-
-    camRotation = player.actor.facingAngle;
-
-    cameraRotationMatrix = getRotationMatrix(camRotation);
-    jadel::Mat3 rotate90DegMatrix = getRotationMatrix(90);
-
-    jadel::Vec2 forward = cameraRotationMatrix.mul(jadel::Vec2(0, 1.0f));
-    jadel::Vec2 left = rotate90DegMatrix.mul(forward);
-
-    if (jadel::inputIsKeyPressed(jadel::KEY_A))
-    {
-        player.actor.vel += left * player.actor.movementSpeed;
-    }
-    if (jadel::inputIsKeyPressed(jadel::KEY_D))
-    {
-        player.actor.vel -= left * player.actor.movementSpeed;
-    }
-    if (jadel::inputIsKeyPressed(jadel::KEY_S))
-    {
-        player.actor.vel -= forward * player.actor.movementSpeed;
-    }
-    if (jadel::inputIsKeyPressed(jadel::KEY_W))
-    {
-        player.actor.vel += forward * player.actor.movementSpeed;
-    }
-
+    Player* player = &currentGameState.player;
+    frameCorrectVel = player->actor.vel * frameTime;
     float playerRadius = 0.3f;
 
-    jadel::Vec2 frameCorrectVel = player.actor.vel * frameTime;
-    jadel::Vec2 playerNextPos = player.actor.pos + frameCorrectVel;
-
-    jadel::Vec2 dir = player.actor.vel.normalize();
+    jadel::Vec2 dir = player->actor.vel.normalize();
     float dirAngle = 360.0f - getAngleOfVec2(dir);
-    jadel::Mat3 playerRotation = getRotationMatrix(player.actor.facingAngle);
+    jadel::Mat3 playerRotation = getRotationMatrix(player->actor.facingAngle);
     jadel::Mat3 movementDirRotation = getRotationMatrix(dirAngle);
 
     jadel::Vec2 playerLeftPoint;
@@ -576,27 +496,27 @@ void tick()
 
     if (dir.length() > 0)
     {
-        playerLeftPoint = player.actor.pos + movementDirRotation.mul(jadel::Vec2(-0.3f, 0.3f));
-        playerRightPoint = player.actor.pos + movementDirRotation.mul(jadel::Vec2(0.3f, 0.3f));
+        playerLeftPoint = player->actor.pos + movementDirRotation.mul(jadel::Vec2(-0.3f, 0.3f));
+        playerRightPoint = player->actor.pos + movementDirRotation.mul(jadel::Vec2(0.3f, 0.3f));
     }
     else
     {
-        playerLeftPoint = player.actor.pos + playerRotation.mul(jadel::Vec2(-0.3f, 0));
-        playerRightPoint = player.actor.pos + playerRotation.mul(jadel::Vec2(0.3f, 0));
+        playerLeftPoint = player->actor.pos + playerRotation.mul(jadel::Vec2(-0.3f, 0));
+        playerRightPoint = player->actor.pos + playerRotation.mul(jadel::Vec2(0.3f, 0));
     }
     collision = false;
-    if (player.actor.vel.length() > 0)
+    if (player->actor.vel.length() > 0)
     {
         RayResult movementRay;
         RayResult movementRayLeft;
         RayResult movementRayRight;
-        shootRay(player.actor.pos + dir * playerRadius, frameCorrectVel, ceilf(frameCorrectVel.length()) + 2.0f, &movementRay);
+        shootRay(player->actor.pos + dir * playerRadius, frameCorrectVel, ceilf(frameCorrectVel.length()) + 2.0f, &movementRay);
         shootRay(playerLeftPoint, frameCorrectVel, ceilf(frameCorrectVel.length()), &movementRayLeft);
         shootRay(playerRightPoint, frameCorrectVel, ceilf(frameCorrectVel.length()), &movementRayRight);
 
         RayResult rayResults[3] = {movementRay, movementRayLeft, movementRayRight};
-        float movementDirX = player.actor.vel.x > 0 ? 1.0f : -1.0f;
-        float movementDirY = player.actor.vel.y > 0 ? 1.0f : -1.0f;
+        float movementDirX = player->actor.vel.x > 0 ? 1.0f : -1.0f;
+        float movementDirY = player->actor.vel.y > 0 ? 1.0f : -1.0f;
 
         jadel::Color collisionColor = {1, 1, 0, 0};
         jadel::Color noCollisionColor = {1, 0, 1, 0};
@@ -655,70 +575,159 @@ void tick()
                 }
             }
         }
-
-        player.actor.pos += frameCorrectVel;
-        for (int i = 0; i < 3; ++i)
-            minimap.pushLine(rayResults[i].start, rayResults[i].end, movementLineColors[i]);
     }
-    /*
+}
 
-    */
-
-    /*minimap.pushLine(playerLeftPoint, movementRayLeft.end, {1, 1, 0, 0});
-    minimap.pushLine(player.actor.pos, movementRay.end, {1, 1, 0, 0});
-    minimap.pushLine(playerRightPoint, movementRayRight.end, {1, 1, 0, 0});
-    jadel::Vec2 modifiedXMovementVec = player.actor.vel;
-    jadel::Vec2 modifiedYMovementVec = player.actor.vel;
-    bool verticalCollision = false;
-    bool horizontalCollision = false;
-    for (int i = 0; i < 3; ++i)
+bool loadSave(const char *filepath, GameState *target)
+{
+    jadel::BinaryFile file;
+    if (!target)
     {
-        RayResult ray = rayResults[i];
-        if (ray.rayEndContent)
-        {
-            jadel::Vec2 rayVector = ray.rayVector();
-            if (ray.isVerticallyClipped)
-            {
-                jadel::Vec2 distanceToYCollision;
-                distanceToYCollision = rayVector - clipSegmentFromLineAtY(rayVector, 0.3f);
-                if (isVec2ALongerThanB(player.actor.vel, distanceToYCollision))
-                {
-
-                    if (!collision || modifiedYMovementVec.length() > distanceToYCollision.length())
-                    {
-                        modifiedYMovementVec = distanceToYCollision;
-                    }
-                    verticalCollision = true;
-                }
-            }
-            else
-            {
-                jadel::Vec2 distanceToXCollision = rayVector - clipSegmentFromLineAtX(rayVector, 0.3f);
-                horizontalCollision = true;
-                if (isVec2ALongerThanB(player.actor.vel, distanceToXCollision))
-                {
-
-                    if (!collision || modifiedXMovementVec.length() > distanceToXCollision.length())
-                    {
-                        modifiedXMovementVec = distanceToXCollision;
-                    }
-                    horizontalCollision = true;
-                }
-            }
-        }
+        jadel::message("[ERROR] Could not load save file %s. No target file!\n", filepath);
+        return false;
     }
-    if (verticalCollision)
+    if (!file.init(filepath))
     {
-        player.actor.vel.x = 0;
-        playerNextPos.y = player.actor.pos.y + modifiedYMovementVec.y;
+        jadel::message("[ERROR] Could not load save file %s. File doesn't exist!\n", filepath);
+        return false;
     }
-    if (horizontalCollision)
+    if (file.fileBufferSize != 3 * sizeof(float))
     {
-        player.actor.vel.y = 0;
-        playerNextPos.x = player.actor.pos.x + modifiedXMovementVec.x;
-    }*/
-    // jadel::message("Player angle: %f\n", player.actor.facingAngle);
-    camPos = player.actor.pos;
+        jadel::message("[ERROR] Could not load save file %s. Corrupt file!\n", filepath);
+        return false;
+    }
+    file.readFloat(&target->player.actor.pos.x);
+    file.readFloat(&target->player.actor.pos.y);
+    file.readFloat(&target->player.actor.facingAngle);
+    jadel::message("Loaded game: %s\n", filepath);
+    file.close();
+    return true;
+}
+
+bool save(const char *filepath, const GameState* state)
+{
+    jadel::BinaryFile file;
+    if (!file.init(3 * sizeof(float)))
+    {
+        jadel::message("[ERROR] Could not save game file: %\n", filepath);
+        return false;
+    }
+    file.writeFloat(state->player.actor.pos.x);
+    file.writeFloat(state->player.actor.pos.y);
+    file.writeFloat(state->player.actor.facingAngle);
+    file.writeToFile(filepath);
+    jadel::message("Saved game: %s\n", filepath);
+    file.close();
+    return true;
+}
+
+void tick()
+{
+    Player* player = &currentGameState.player;
+    player->actor.vel *= 0;
+    // jadel::message("sc W: %f, sc D: %f\n", screenPlaneWidth, screenPlaneDist);
+    minimap.clear();
+
+    if (jadel::inputIsKeyTyped(jadel::KEY_Q))
+    {
+        save("save/save01.sv", &currentGameState);
+    }
+
+    if (jadel::inputIsKeyTyped(jadel::KEY_E))
+    {
+        loadSave("save/save01.sv", &currentGameState);
+    }
+    if (jadel::inputIsKeyPressed(jadel::KEY_N))
+    {
+        if (resolutionDivider < screenWidth)
+            resolutionDivider += 2;
+    }
+    if (jadel::inputIsKeyPressed(jadel::KEY_M))
+    {
+        if (resolutionDivider > 1)
+            resolutionDivider -= 2;
+    }
+    if (jadel::inputIsKeyTyped(jadel::KEY_PAGEUP))
+    {
+        ++currentRayMaxDistance;
+    }
+
+    if (jadel::inputIsKeyTyped(jadel::KEY_PAGEDOWN))
+    {
+        --currentRayMaxDistance;
+        if (currentRayMaxDistance < 1)
+            currentRayMaxDistance = 1;
+    }
+    if (jadel::inputIsKeyTyped(jadel::KEY_TAB))
+    {
+        showMiniMap = !showMiniMap;
+    }
+    if (jadel::inputIsKeyTyped(jadel::KEY_SHIFT))
+    {
+        player->actor.movementSpeed = runningMovementSpeed;
+    }
+    else if (jadel::inputIsKeyReleased(jadel::KEY_SHIFT))
+    {
+        player->actor.movementSpeed = standardMovementSpeed;
+    }
+    if (jadel::inputIsKeyPressed(jadel::KEY_X))
+    {
+        screenPlaneDist += 0.8f * frameTime;
+    }
+    if (jadel::inputIsKeyPressed(jadel::KEY_Z))
+    {
+        screenPlaneDist -= 0.8f * frameTime;
+    }
+
+    if (jadel::inputIsKeyPressed(jadel::KEY_V))
+    {
+        screenPlaneWidth += (0.8f * screenPlaneWidth) * frameTime;
+    }
+    if (jadel::inputIsKeyPressed(jadel::KEY_C))
+    {
+        screenPlaneWidth -= (0.8f * screenPlaneWidth) * frameTime;
+    }
+    if (jadel::inputIsKeyPressed(jadel::KEY_LEFT))
+    {
+        rotateActorTowards(&player->actor, -1);
+        // player.actor.facingAngle += player.turningSpeed * frameTime;
+    }
+
+    if (jadel::inputIsKeyPressed(jadel::KEY_RIGHT))
+    {
+        rotateActorTowards(&player->actor, 1);
+        // player->actor.facingAngle -= player->turningSpeed * frameTime;
+    }
+
+    camRotation = player->actor.facingAngle;
+
+    cameraRotationMatrix = getRotationMatrix(camRotation);
+    jadel::Mat3 rotate90DegMatrix = getRotationMatrix(90);
+
+    jadel::Vec2 forward = cameraRotationMatrix.mul(jadel::Vec2(0, 1.0f));
+    jadel::Vec2 left = rotate90DegMatrix.mul(forward);
+
+    if (jadel::inputIsKeyPressed(jadel::KEY_A))
+    {
+        player->actor.vel += left * player->actor.movementSpeed;
+    }
+    if (jadel::inputIsKeyPressed(jadel::KEY_D))
+    {
+        player->actor.vel -= left * player->actor.movementSpeed;
+    }
+    if (jadel::inputIsKeyPressed(jadel::KEY_S))
+    {
+        player->actor.vel -= forward * player->actor.movementSpeed;
+    }
+    if (jadel::inputIsKeyPressed(jadel::KEY_W))
+    {
+        player->actor.vel += forward * player->actor.movementSpeed;
+    }
+
+    collisionCheck();
+    player->actor.pos += frameCorrectVel;
+
+    camPos = player->actor.pos;
 
     lastCamPos = camPos;
 
@@ -746,29 +755,51 @@ void pushActor(float x, float y, jadel::Rectf dim)
     actor->dim = dim;
 }
 
+GameState gameStartState = {{jadel::Vec2(1.5f, 1.5f)}};
+
+bool setGameState(const GameState* state)
+{
+    if (!state)
+    {
+        jadel::message("[ERROR] NULL Game state!\n");
+        return false;
+    }
+    currentGameState = *state;
+    return true;
+}
+
 void init()
-{   
-    
+{
+
+    bool gameStateSet = false;
     maxActors = 100;
     numActors = 0;
     actors = (Actor *)jadel::memoryReserve(maxActors * sizeof(Actor));
     pushActor(2.5f, 3.5f, {0, 0, 0.3f, 0.7f});
     pushActor(5.5f, 5.5f, {0, 0, 0.4f, 0.6f});
 
-    player.actor.pos = jadel::Vec2(1.5f, 1.5f);
-    player.actor.movementSpeed = standardMovementSpeed;
-    player.actor.turningSpeed = 140.0f;
-    camPos = player.actor.pos;
-    camRotation = player.actor.facingAngle;
+
+    if (myArgc > 1)
+    {
+        gameStateSet = loadSave(myArgv[1], &currentGameState);
+    }
+    if (!gameStateSet)
+    {
+        currentGameState = gameStartState;
+    }
+    currentGameState.player.actor.movementSpeed = standardMovementSpeed;
+    currentGameState.player.actor.turningSpeed = 140.0f;
+    camPos = currentGameState.player.actor.pos;
+    camRotation = currentGameState.player.actor.facingAngle;
     for (int y = 0; y < MAP_HEIGHT; ++y)
     {
         for (int x = 0; x < MAP_WIDTH; ++x)
         {
             int index = x + y * MAP_WIDTH;
             map[index] = y % 2 == 0 && x % 2 == 0 ? 1 : 0;
-            jadel::message("%d ", map[index]);
+            //jadel::message("%d ", map[index]);
         }
-        jadel::message("\n");
+        //jadel::message("\n");
     }
 
     minimap.maxRects = 500;
@@ -780,8 +811,10 @@ void init()
     minimap.clear();
 }
 
-int JadelMain()
+int JadelMain(int argc, char **argv)
 {
+    myArgc = argc;
+    myArgv = argv;
     if (!JadelInit(MB(500)))
     {
         jadel::message("Jadel init failed!\n");
@@ -789,6 +822,10 @@ int JadelMain()
     }
     jadel::allocateConsole();
     srand(time(NULL));
+    for (int i = 0; i < argc; ++i)
+    {
+        jadel::message("%d: %s\n", i, argv[i]);
+    }
 #ifdef DEBUG
     if (!DEBUGInit())
     {
@@ -810,13 +847,29 @@ int JadelMain()
     frameTimer.start();
     uint32 elapsedInMillis = 0;
     uint32 minFrameTime = 1000 / 165;
+    uint32 accumulator = 0;
+    int framesPerSecond = 0;
     while (true)
     {
         JadelUpdate();
-        tick();
-        jadel::windowUpdate(&window, &winSurface);
 
+        tick();
+        ++framesPerSecond;
+        jadel::windowUpdate(&window, &winSurface);
         elapsedInMillis = frameTimer.getMillisSinceLastUpdate();
+        accumulator += elapsedInMillis;
+
+#ifdef DEBUG
+        // DEBUGClear("frame");
+        if (accumulator >= 1000)
+        {
+            // DEBUGPushFloat(frameTime, "frame");
+            // DEBUGPushInt(framesPerSecond, "frame");
+            // DEBUGPrint("frame");
+            accumulator %= 1000;
+            framesPerSecond = 0;
+        }
+#endif
         if (elapsedInMillis < minFrameTime)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(minFrameTime - elapsedInMillis));
