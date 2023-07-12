@@ -1,3 +1,4 @@
+@echo off
 cd bin
-rc
+rc %*
 cd ..

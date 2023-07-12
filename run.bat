@@ -1,3 +1,4 @@
+@echo off
 cd bin
-rcDEBUG
+rcDEBUG %*
 cd ..
