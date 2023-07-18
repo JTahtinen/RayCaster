@@ -43,14 +43,18 @@ bool loadSaveFromFile(const char *const filePath, GameState *target)
         file.close();
         return false;
     }
+    jadel::Vec2 playerPos;
+    float playerRotation;
     int mapFilePathLength = 0;
     char mapFilePath[MAX_MAP_FILENAME_LENGTH + 1] = {0};
     file.readInt(&mapFilePathLength);
     file.readString(mapFilePath, mapFilePathLength);
-    file.readFloat(&target->player.actor.pos.x);
-    file.readFloat(&target->player.actor.pos.y);
-    file.readFloat(&target->player.actor.facingAngle);
+    file.readFloat(&playerPos.x);
+    file.readFloat(&playerPos.y);
+    file.readFloat(&playerRotation);
     file.readBool(&target->showMiniMap);
+    target->player.actor.setPosition(playerPos);
+    target->player.actor.setRotation(playerRotation);
     jadel::message("Loaded game: %s\n", finalFilePath);
     file.close();
     if (modifiedFilePath)
@@ -94,12 +98,14 @@ bool saveGameToFile(const char *fileName, const GameState *state)
     }
     saveFile.header[0] = 'S';
     saveFile.header[1] = 'F';
+    jadel::Vec2 playerPos = state->player.getPosition();
+    float playerRotation = state->player.getRotation();
     file.writeString(saveFile.header, 2);
     file.writeInt(strnlen_s(state->map.fileName, MAX_MAP_FILENAME_LENGTH));
     file.writeString(state->map.fileName);
-    file.writeFloat(state->player.actor.pos.x);
-    file.writeFloat(state->player.actor.pos.y);
-    file.writeFloat(state->player.actor.facingAngle);
+    file.writeFloat(playerPos.x);
+    file.writeFloat(playerPos.y);
+    file.writeFloat(playerRotation);
     file.writeBool(state->showMiniMap);
     file.writeToFile(filePath);
     jadel::message("Saved game: %s\n", filePath);
