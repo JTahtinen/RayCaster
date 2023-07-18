@@ -4,6 +4,28 @@
 #include <math.h>
 #include "defs.h"
 
+bool isFloatEven(float val)
+{
+    bool result = (val - (float)((int)val)) == 0;
+    return result;
+}
+
+bool isFloatEvenWithinMargin(float val, float margin)
+{
+    float remainder = fabs(val - roundf(val));
+    bool result = remainder <= margin;
+    //if (msg)
+      //  jadel::message("Val: %f, margin: %f, remainder: %f, result: %d\n", val, margin, remainder, (int)result);
+    return result;
+}
+
+bool isFloatEqualWithinMargin(float val, float comparison, float margin)
+{
+    float diff = val - comparison;
+    bool result = fabs(diff) <= fabs(margin);
+    return result;
+}
+
 bool isStringHeader(const char *expectedHeader, const char *string)
 {
     size_t headerLength = strlen(expectedHeader);
@@ -42,8 +64,6 @@ char *appendString(const char *const stringStart, const char *const stringEnd)
     return result;
 }
 
-
-
 float getAngleOfVec2(jadel::Vec2 vec)
 {
     if (vec.x < 0)
@@ -65,6 +85,12 @@ bool isVec2ALongerThanB(jadel::Vec2 a, jadel::Vec2 b)
 bool isVec2ALengthEqualToB(jadel::Vec2 a, jadel::Vec2 b)
 {
     bool result = (a.x * a.x + a.y * a.y) == (b.x * b.x + b.y * b.y);
+    return result;
+}
+
+bool isVec2ALongerThanOrEqualToB(jadel::Vec2 a, jadel::Vec2 b)
+{
+    bool result = (a.x * a.x + a.y * a.y) >= (b.x * b.x + b.y * b.y);
     return result;
 }
 
@@ -94,7 +120,6 @@ float moduloFloat(float value, int mod)
     return result;
 }
 
-
 jadel::Vec2 clipSegmentFromLineAtY(jadel::Vec2 source, float y)
 {
     if (source.y == 0)
@@ -110,5 +135,17 @@ jadel::Vec2 clipSegmentFromLineAtX(jadel::Vec2 source, float x)
         return source;
     float ratio = source.y / source.x;
     jadel::Vec2 result(x, ratio * x);
+    return result;
+}
+
+jadel::Mat3 getRotationMatrix(float angleInDegrees)
+{
+    float finalAngle = moduloFloat(angleInDegrees, 360);
+    float radAngle = TO_RADIANS(finalAngle);
+    jadel::Mat3 result =
+        {
+            cosf(radAngle), sinf(radAngle), 0,
+            -sinf(radAngle), cosf(radAngle), 0,
+            0, 0, 1};
     return result;
 }
