@@ -1,6 +1,10 @@
 #pragma once
 #include <jadel.h>
 #include "map.h"
+#include "minimap.h"
+#include "util.h"
+#include "actor.h"
+#include "controlscheme.h"
 
 extern int screenWidth;
 extern int screenHeight;
@@ -10,27 +14,29 @@ extern float aspectHeight;
 
 extern float frameTime;
 
-struct Actor
+enum
 {
-    jadel::Vec2 pos;
-    jadel::Vec2 vel;
-    jadel::Rectf dim;
-    float facingAngle;
-    float movementSpeed;
-    float turningSpeed;
-};
-
-struct Player
-{
-    Actor actor;
+    GAME_COMMAND_MOVE_LEFT = 1,
+    GAME_COMMAND_MOVE_RIGHT,
+    GAME_COMMAND_MOVE_UP,
+    GAME_COMMAND_MOVE_DOWN,
+    GAME_COMMAND_TURN_LEFT,
+    GAME_COMMAND_TURN_RIGHT,
+    GAME_COMMAND_RUNNING_SPEED,
+    GAME_COMMAND_WALKING_SPEED,
+    GAME_COMMAND_TOGGLE_MINIMAP,
+    GAME_COMMAND_SAVE_QUICK,
+    GAME_COMMAND_LOAD_QUICK
 };
 
 struct GameState
 {
     Map map;
+    Minimap minimap;
     Player player;
     bool showMiniMap;
-
+    Camera camera;
+    ControlScheme controls;
     void setMap(Map *map);
 };
 
