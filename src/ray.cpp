@@ -2,6 +2,7 @@
 #include "util.h"
 #include "rc.h"
 #include <math.h>
+#include <jadel.h>
 
 float Ray::length() const
 {
@@ -15,17 +16,94 @@ jadel::Vec2 Ray::rayVector() const
     return result;
 }
 
-int Ray::shoot(const jadel::Vec2 start, const jadel::Vec2 dir, uint32 maxDistance, const Map* map)
+enum Clip
+{
+    VERTICAL_CLIP = 1,
+    HORIZONTAL_CLIP = 1 << 1,
+};
+
+const MapUnit *getContentFromEdge(Ray *ray, jadel::Vec2 rayPos, int xDir, int yDir, uint32 clip, const Map *map)
+{
+    int xContent;
+    int yContent;
+    
+    if (clip & HORIZONTAL_CLIP)
+    {
+        if (xDir > 0)
+        {
+            xContent = jadel::roundToInt(rayPos.x);
+        }
+        else if (xDir <= 0)
+        {
+            xContent = jadel::roundToInt(rayPos.x) - 1;
+        }
+    }
+    else
+    {
+        xContent = (int)rayPos.x;
+    }
+    if (clip & VERTICAL_CLIP)
+    {
+        if (yDir > 0)
+        {
+            yContent = jadel::roundToInt(rayPos.y);
+        }
+        else if (yDir <= 0)
+        {
+            yContent = jadel::roundToInt(rayPos.y) - 1;
+        }
+    }
+    else
+    {
+        yContent = (int)rayPos.y;
+    }
+    const MapUnit *result = map->getSectorContent(xContent, yContent);
+
+    return result;
+}
+
+void setRayResult(Ray *ray, jadel::Vec2 start, jadel::Vec2 end, bool isVerticallyClipped, bool isClippedOnCorner, const MapUnit *rayEndContent)
+{
+    ray->start = start;
+    ray->end = end;
+    ray->isVerticallyClipped = isVerticallyClipped;
+    ray->isClippedOnCorner = isClippedOnCorner;
+    ray->rayEndContent = rayEndContent;
+}
+
+int Ray::shoot(const jadel::Vec2 start, const jadel::Vec2 dir, uint32 maxDistance, const Map *map)
 {
     if (maxDistance < 1)
         return 0;
-    int isXDirPositive = dir.x > 0 ? 1 : 0;
-    int isYDirPositive = dir.y > 0 ? 1 : 0;
+    int isXDirPositive = dir.x >= 0 ? 1 : 0;
+    int isYDirPositive = dir.y >= 0 ? 1 : 0;
+    int xDir = dir.x > 0 ? 1 : (dir.x == 0 ? 0 : -1);
+    int yDir = dir.y > 0 ? 1 : (dir.y == 0 ? 0 : -1);
+    bool startXAtEdge = isFloatEvenWithinMargin(start.x, 0.001f);
+    bool startYAtEdge = isFloatEvenWithinMargin(start.y, 0.001f);
+    if (startXAtEdge || startYAtEdge)
+    {
+        uint32 clipFlags = (VERTICAL_CLIP * (uint32)startYAtEdge) | (HORIZONTAL_CLIP * (uint32)startXAtEdge);
+        // jadel::message("ClipFlags: %d\n", (int)clipFlags);
+        const MapUnit *rayStartContent = getContentFromEdge(this, start, xDir, yDir, clipFlags, map);
+        if (rayStartContent->barrier)
+        {
+            bool isClippedOnCorner = startXAtEdge && startYAtEdge;
+            static int i = 0;
+            if (isClippedOnCorner)
+                jadel::message("Corner collision %d!\n", i++);
+            setRayResult(this, start, start, startYAtEdge, isClippedOnCorner, rayStartContent);
+            return 1;
+        }
+        if (xDir == 0 && yDir == 0)
+        {
+            const MapUnit *content = map->getSectorContent(start.x, start.y);
+            setRayResult(this, start, start, content->barrier, content->barrier, content);
+            return 0;
+        }
+    }
 
-    // jadel::Vec2 unRotatedScreenClip = clipSegmentFromLineAtY(unRotatedRayLine, defaultScreenPlane.y);
-    // jadel::Vec2 rotatedScreenClip = cameraRotationMatrix.mul(unRotatedScreenClip);
-
-    const MapUnit* rayEndContent = MapUnit::getNullMapUnit();
+    const MapUnit *rayEndContent = MapUnit::getNullMapUnit();
 
     bool raySegmentIsVerticallyClipped = false;
     bool raySegmentIsClippedOnCorner = false;
@@ -60,13 +138,14 @@ int Ray::shoot(const jadel::Vec2 start, const jadel::Vec2 dir, uint32 maxDistanc
         */
 
         jadel::Vec2 clippedRaySegment(0, 0);
-        if (isVec2ALongerThanB(horizontallyClippedRaySegment, verticallyClippedRaySegment))
+
+        if (xDir == 0)
         {
             clippedRaySegment = verticallyClippedRaySegment;
             raySegmentIsVerticallyClipped = true;
             raySegmentIsClippedOnCorner = false;
         }
-        else if (isVec2ALongerThanB(verticallyClippedRaySegment, horizontallyClippedRaySegment))
+        else if (yDir == 0)
         {
             clippedRaySegment = horizontallyClippedRaySegment;
             raySegmentIsVerticallyClipped = false;
@@ -74,29 +153,43 @@ int Ray::shoot(const jadel::Vec2 start, const jadel::Vec2 dir, uint32 maxDistanc
         }
         else
         {
-            clippedRaySegment = horizontallyClippedRaySegment;
-            raySegmentIsClippedOnCorner = true;
+            if (isVec2ALongerThanB(horizontallyClippedRaySegment, verticallyClippedRaySegment))
+            {
+                clippedRaySegment = verticallyClippedRaySegment;
+                raySegmentIsVerticallyClipped = true;
+                raySegmentIsClippedOnCorner = false;
+            }
+            else if (isVec2ALongerThanB(verticallyClippedRaySegment, horizontallyClippedRaySegment))
+            {
+                clippedRaySegment = horizontallyClippedRaySegment;
+                raySegmentIsVerticallyClipped = false;
+                raySegmentIsClippedOnCorner = false;
+            }
+            else
+            {
+                clippedRaySegment = verticallyClippedRaySegment;
+                raySegmentIsVerticallyClipped = true;
+                raySegmentIsClippedOnCorner = true;
+            }
         }
         rayMarchPos += clippedRaySegment;
-        if (rayMarchPos.x <= 0 || rayMarchPos.y <= 0 || rayMarchPos.x >= map->height || rayMarchPos.y >= map->height)
+        if (rayMarchPos.x <= 0 || rayMarchPos.y <= 0 || rayMarchPos.x >= map->width || rayMarchPos.y >= map->height)
             break;
 
-        bool xMarginNeeded = ((!isXDirPositive && !raySegmentIsVerticallyClipped) || raySegmentIsClippedOnCorner);
-        bool yMarginNeeded = ((!isYDirPositive && raySegmentIsVerticallyClipped) || raySegmentIsClippedOnCorner);
+        uint32 clipFlags = 0;
+        clipFlags += HORIZONTAL_CLIP * ((!raySegmentIsVerticallyClipped) || raySegmentIsClippedOnCorner) | VERTICAL_CLIP * (raySegmentIsVerticallyClipped || raySegmentIsClippedOnCorner);
+        // bool xMarginNeeded = ((!isXDirPositive && !raySegmentIsVerticallyClipped) || raySegmentIsClippedOnCorner);
+        // bool yMarginNeeded = ((!isYDirPositive && raySegmentIsVerticallyClipped) || raySegmentIsClippedOnCorner);
 
-        float xMargin = xMarginNeeded * (-0.1f);
-        float yMargin = yMarginNeeded * (-0.1f);
+        // float xMargin = xMarginNeeded * (-0.1f);
+        // float yMargin = yMarginNeeded * (-0.1f);
 
-        rayEndContent = map->getSectorContent(floorf(rayMarchPos.x + xMargin), floorf(rayMarchPos.y + yMargin));
+        rayEndContent = getContentFromEdge(this, rayMarchPos, xDir, yDir, clipFlags, map); // map->getSectorContent(floorf(rayMarchPos.x + xMargin), floorf(rayMarchPos.y + yMargin));
         if (rayEndContent->barrier)
         {
             break;
         }
     }
-    this->start = start;
-    this->end = rayMarchPos;
-    this->isVerticallyClipped = raySegmentIsVerticallyClipped;
-    this->isClippedOnCorner = raySegmentIsClippedOnCorner;
-    this->rayEndContent = rayEndContent;
+    setRayResult(this, start, rayMarchPos, raySegmentIsVerticallyClipped, raySegmentIsClippedOnCorner, rayEndContent);
     return 1;
 }
