@@ -10,6 +10,8 @@ int resolutionDivider = 1;
 float screenPlaneDist = 0.15f;
 float screenPlaneWidth = screenPlaneDist / aspectHeight;
 
+static jadel::Surface columnBuffer;
+
 void setScreenPlane(float distance, float width)
 {
     screenPlaneDist = distance;
@@ -19,6 +21,11 @@ void setScreenPlane(float distance, float width)
 void modScreenPlane(float distance, float width)
 {
     setScreenPlane(screenPlaneDist + distance, screenPlaneWidth + width);
+}
+
+void initRenderer()
+{
+    jadel::graphicsCreateSurface(1, screenHeight, &columnBuffer);
 }
 
 void render()
@@ -40,20 +47,19 @@ void render()
     jadel::Vec2 minimapCameraStart = minimapStart + camPos * 0.05f;
     jadel::Vec2 unRotatedVirtualScreenStartClip(-screenPlaneWidth * 0.5f, screenPlaneDist);
     jadel::Vec2 unRotatedVirtualScreenEndClip(screenPlaneWidth * 0.5f, screenPlaneDist);
-    jadel::Vec2 virtualScreenWorldStart = camPos + cameraRotationMatrix.mul(unRotatedVirtualScreenStartClip);
-    jadel::Vec2 virtualScreenWorldEnd = camPos + cameraRotationMatrix.mul(unRotatedVirtualScreenEndClip);
+    jadel::Vec2 virtualScreenWorldStart = camPos + cameraRotationMatrix * unRotatedVirtualScreenStartClip;
+    jadel::Vec2 virtualScreenWorldEnd = camPos + cameraRotationMatrix * unRotatedVirtualScreenEndClip;
     float screenPlaneXEnd = edgeXDiff;
     jadel::Mat3 cameraToScreenRotationMatrix = getRotationMatrix(360.0f - currentGameState.camera.getRotation());
     for (int seg = 0; seg < internalHorizontalResolution; ++seg)
     {
         jadel::Vec2 unRotatedCamToScreenRay(unRotatedVirtualScreenStartClip.x + (float)seg * (screenPlaneWidth / (float)internalHorizontalResolution), screenPlaneDist); // Can be modified, so x should not be set to currentScreenX
         // unRotatedRayLine = clipSegmentFromLineAtY(unRotatedRayLine, 1.0f);
-        jadel::Vec2 camToScreenColumnVector = cameraRotationMatrix.mul(unRotatedCamToScreenRay);
-        jadel::Vec2 rayStartPos = camPos;// + camToScreenColumnVector;
+        jadel::Vec2 camToScreenColumnVector = cameraRotationMatrix * unRotatedCamToScreenRay;
+        jadel::Vec2 rayStartPos = camPos; // + camToScreenColumnVector;
 
         Ray rayResult;
         rayResult.shoot(camPos, camToScreenColumnVector, 100, &currentGameState.map);
-
         /*
                 if (seg % 200 == 0 || seg == internalHorizontalResolution / 2 || seg == internalHorizontalResolution - 1)
                 {
@@ -61,20 +67,20 @@ void render()
                     minimap->pushLine(camPos, rayResult.start, {1, 1, 0, 1});
 
                     static jadel::Vec2 clipPointDim(0.1f, 0.1f);
-                    minimap->pushRect(rayResult.end - clipPointDim, rayResult.end + clipPointDim, {1, 1, 1, 0});
+                        minimap->pushRect(rayResult.end - clipPointDim, rayResult.end + clipPointDim, {1, 1, 1, 0});
                     if (seg == 0 || seg == internalHorizontalResolution - 1)
                     {
                         minimap->pushLine(camPos, rayResult.end, {1, 1, 0, 0});
                     }
                 }
         */
-
-        if (rayResult.rayEndContent->barrier)
+        RayContent rayEndContent = rayResult.clips.back().content;
+        if ((rayEndContent.type == RAY_CONTENT_TYPE_SECTOR) && rayEndContent.barrier)
         {
             float dist = rayResult.length();
             float range;
             jadel::Vec2 rayVector = rayResult.rayVector();
-            jadel::Vec2 rotatedRayVector = cameraToScreenRotationMatrix.mul(rayVector);
+            jadel::Vec2 rotatedRayVector = cameraToScreenRotationMatrix * rayVector;
 
             range = rotatedRayVector.y;
 
@@ -83,8 +89,7 @@ void render()
                 static float defaultWallScale = 0.8f;
                 static float obliqueWallScale = 0.1f;
                 float cosWallAngle;
-
-                if (rayResult.isVerticallyClipped)
+                if (rayEndContent.isVerticallyClipped)
                 {
 
                     cosWallAngle = fabs(getCosBetweenVectors(rayResult.end - camPos, jadel::Vec2(1.0f, 0)));
@@ -93,12 +98,12 @@ void render()
                 {
                     cosWallAngle = fabs(getCosBetweenVectors(rayResult.end - camPos, jadel::Vec2(0, 1.0f)));
                 }
-                jadel::Color worldWallColor = rayResult.rayEndContent->color;
+                jadel::Color worldWallColor = rayEndContent.color;
                 float wallAngleFactor = 1.0f - cosWallAngle;
                 // jadel::Color defaultWallColor = {1, defaultWallScale, defaultWallScale, defaultWallScale};
                 float scale = jadel::lerp(obliqueWallScale, defaultWallScale, wallAngleFactor);
 
-                static float ambientLight = 0.4f;
+                static float ambientLight = 1.0f;
                 float distanceSquared = (dist * dist);
                 if (distanceSquared == 0)
                 {
@@ -109,36 +114,28 @@ void render()
                 float ambientGreen = ambientLight * worldWallColor.g;
                 float ambientBlue = ambientLight * worldWallColor.b;
 
-                jadel::Color wallColor = {worldWallColor.a,
+                jadel::Color wallColor = {1.0f,
                                           jadel::clampf((scale * worldWallColor.r) * distanceModifier + (ambientRed * scale), 0, worldWallColor.r + ambientRed),
                                           jadel::clampf((scale * worldWallColor.g) * distanceModifier + (ambientGreen * scale), 0, worldWallColor.g + ambientGreen),
                                           jadel::clampf((scale * worldWallColor.b) * distanceModifier + (ambientBlue * scale), 0, worldWallColor.b + ambientBlue)};
+                
+                const jadel::Surface* texture = &rayEndContent.texture->surface;
                 float currentScreenX = -edgeXDiff + (float)seg * columnWidth;
-                jadel::graphicsDrawRectRelative({currentScreenX, -1.0f / range, currentScreenX + columnWidth, 1.0f / range}, wallColor);
+                jadel::Rectf column = {currentScreenX, -1.0f / range, currentScreenX + columnWidth, 1.0f / range};
+                float columnHeight = column.y1;
+                int textureColumnPixelX = jadel::roundToInt(rayEndContent.distanceFromLeftEdge * (float)texture->width);
+                int columnHeightInPixels = jadel::roundToInt(columnHeight * (float)columnBuffer.height);
+                if (columnHeightInPixels > columnBuffer.height) columnHeightInPixels = columnBuffer.height;                
+                jadel::Recti pixelSourceColumn(textureColumnPixelX, 0, textureColumnPixelX + 1, texture->height);
+                jadel::graphicsPushTargetSurface(&columnBuffer);
+                jadel::graphicsBlit(texture, {0, 0, 1, columnHeightInPixels}, pixelSourceColumn);
+                jadel::graphicsMultiplyPixelValues(wallColor.r, wallColor.g, wallColor.b, pixelSourceColumn);
+                jadel::graphicsPopTargetSurface();
+                jadel::graphicsBlitRelative(&columnBuffer, column, jadel::Recti(0, 0, 1, columnHeightInPixels));
             }
         }
     }
     minimap->pushLine(virtualScreenWorldStart, virtualScreenWorldEnd, {1, 0, 0, 1});
-
-    /*
-        jadel::Mat3 viewRotationMatrix = getRotationMatrix(-camRotation);
-        float screenToScreenPlaneRatio = 1.0f / (screenPlaneWidth / 2.0f);
-        for (int a = 0; a < numActors; ++a)
-        {
-            Actor *actor = &actors[a];
-            jadel::Vec2 translatedPosition = actor->pos - camPos;
-            jadel::Vec2 finalPosition = viewRotationMatrix.mul(translatedPosition);
-            finalPosition;
-
-            float dist = finalPosition.length();
-            float halfActorWidthOnScreen = (actor->dim.x1 * 0.5f) / dist;
-            float actorHeightOnScreen = (actor->dim.y1) / dist;
-            jadel::Rectf finalRect = {(finalPosition.x - halfActorWidthOnScreen) , -1.0f / dist, finalPosition.x + halfActorWidthOnScreen, -1.0f  / dist + actorHeightOnScreen};
-            jadel::graphicsDrawRectRelative(finalRect, {1, 0.7, 0, 0});
-            jadel::Vec2 actorMapPos = mapStart + jadel::Vec2(actor->pos.x * 0.05f, actor->pos.y * 0.05f);
-            pushRectRenderable({actorMapPos.x - actor->dim.x1 * 0.05f, actorMapPos.y - actor->dim.x1 * 0.05f, actorMapPos.x + actor->dim.x1 * 0.05f, actorMapPos.y + actor->dim.x1 * 0.05f}, {0.7f, 0, 0, 1});
-        }
-        */
 
     if (currentGameState.showMiniMap)
     {
@@ -147,7 +144,7 @@ void render()
         {
             for (int x = 0; x < map->width; ++x)
             {
-                bool barrier = map->getSectorContent(x, y)->barrier;
+                bool barrier = map->getSector(x, y)->barrier;
                 static jadel::Color occupiedSectorColor = {0.7f, 0.3f, 0.3f, 0.3f};
                 static jadel::Color emptySectorColor = {0.7f, 0.2f, 0.2f, 0.2f};
                 jadel::Color sectorColor = !barrier ? emptySectorColor : occupiedSectorColor;
@@ -172,7 +169,7 @@ void render()
 
         for (int i = 0; i < minimap->numLines; ++i)
         {
-            Line renderable = minimap->lines[i];
+            LineRenderable renderable = minimap->lines[i];
             jadel::Vec2 start = renderable.start;
             jadel::Vec2 end = renderable.end;
             jadel::Vec2 perspectiveStart = minimap->findPointOnScreen(start);

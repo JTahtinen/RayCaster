@@ -9,4 +9,5 @@ extern float screenPlaneWidth;
 
 void setScreenPlane(float distance, float width);
 void modScreenPlane(float distance, float width);
+void initRenderer();
 void render();
