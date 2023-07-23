@@ -1,7 +1,7 @@
 #pragma once
 #include <jadel.h>
 
-struct Line
+struct LineRenderable
 {
     jadel::Vec2 start;
     jadel::Vec2 end;
