@@ -1,12 +1,13 @@
 #pragma once
 #include "controlscheme.h"
 #include "stackarray.h"
+#include <jadel.h>
 
 #define RC_COMMAND_NULL (0)
 
 struct CommandList
 {
-    StackArray<uint32, MAX_KEY_COMMANDS_PER_TYPE * 3> list;
+    jadel::StackArray<uint32, MAX_KEY_COMMANDS_PER_TYPE * 3> list;
     size_t currentCommandIndex;
 
     void clear();
