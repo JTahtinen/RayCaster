@@ -1,11 +1,14 @@
 #pragma once
 #include <jadel.h>
 
-bool isFloatEven(float val);
+#define IS_VAL_BETWEEN( val, min, max ) ((min < val) && (val < max))
+#define IS_VAL_BETWEEN_INCLUSIVE( val, min, max ) ((min <= val) && (val <= max))
 
-bool isFloatEvenWithinMargin(float val, float margin);
+bool isFloatEven(float val, float epsilon);
 
-bool isFloatEqualWithinMargin(float val, float comparison, float margin);
+bool compareFloats(float val0, float val1, float epsilon);
+
+bool compareVec2(jadel::Vec2 v0, jadel::Vec2 v1, float epsilon);
 
 bool isStringHeader(const char *expectedHeader, const char *string);
 

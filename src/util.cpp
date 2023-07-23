@@ -4,25 +4,21 @@
 #include <math.h>
 #include "defs.h"
 
-bool isFloatEven(float val)
+bool isFloatEven(float val, float epsilon)
 {
-    bool result = (val - (float)((int)val)) == 0;
+    bool result = compareFloats(val - (float)((int)val), 0, epsilon);
     return result;
 }
 
-bool isFloatEvenWithinMargin(float val, float margin)
+bool compareFloats(float val0, float val1, float epsilon)
 {
-    float remainder = fabs(val - roundf(val));
-    bool result = remainder <= margin;
-    //if (msg)
-      //  jadel::message("Val: %f, margin: %f, remainder: %f, result: %d\n", val, margin, remainder, (int)result);
+    bool result = fabs(val0 - val1) <= epsilon * fabs(val0);
     return result;
 }
 
-bool isFloatEqualWithinMargin(float val, float comparison, float margin)
+bool compareVec2(jadel::Vec2 v0, jadel::Vec2 v1, float epsilon)
 {
-    float diff = val - comparison;
-    bool result = fabs(diff) <= fabs(margin);
+    bool result = compareFloats(v0.x, v1.x, epsilon) && compareFloats(v0.y, v1.y, epsilon);
     return result;
 }
 
