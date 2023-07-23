@@ -1,26 +1,40 @@
 #include "map.h"
 #include "util.h"
+#include "rc.h"
+#include "defs.h"
 
-static MapUnit nullMapUnit = {0};
+static Sector nullMapUnit = {0};
 
 static const char *const mapSignature = "RCMAP";
 
-struct MapFile
+struct MapFileSector
 {
-    char signature[5];
-    int nameLength;
+    bool barrier;
+    jadel::Color color;
+    char textureFilePath[MAX_TEXTURE_FILEPATH_LENGTH + 1];
+};
+
+static size_t mapFileHeaderSize = 0;
+
+struct MapFileHeader
+{
+    char signature[6];
     char name[MAX_MAP_NAME_LENGTH + 1];
-    int fileNameLength;
     char fileName[MAX_MAP_FILENAME_LENGTH + 1];
     int width;
     int height;
-    MapUnit *content;
-
-    bool loadFromFile(Map* target, const char * const fileName);
-    bool saveToFile(const char * const fileName) const;
 };
 
-MapUnit *MapUnit::getNullMapUnit()
+struct MapFile
+{
+    MapFileHeader header;
+    MapFileSector *content;
+
+    bool loadFromFile(Map *target, const char *const fileName);
+    bool saveToFile(const char *const fileName) const;
+};
+
+Sector *Sector::getNullMapUnit()
 {
     return &nullMapUnit;
 }
@@ -34,7 +48,7 @@ static bool initWithoutPopulating(int width, int height, const char *const name,
         target->height = 0;
         return false;
     }
-    target->sectors = (MapUnit *)jadel::memoryReserve(width * height * sizeof(MapUnit));
+    target->sectors = (Sector *)jadel::memoryReserve(width * height * sizeof(Sector));
     if (!target->sectors)
     {
         jadel::message("[ERROR] Could init map - Memory allocation failed!\n");
@@ -42,14 +56,26 @@ static bool initWithoutPopulating(int width, int height, const char *const name,
         target->height = 0;
         return false;
     }
-    strncpy_s(target->name, MAX_MAP_NAME_LENGTH, name, MAX_MAP_NAME_LENGTH);
+    strncpy(target->name, name, MAX_MAP_NAME_LENGTH);
     target->width = width;
     target->height = height;
     target->isSavedToFile = false;
     return true;
 }
 
-bool init(MapFile *mapFile, Map* target)
+void setSectorContent(int x, int y, MapFileSector sector, Map *target)
+{
+    Sector *unit = target->getSector(x, y);
+    if (!unit)
+    {
+        return;
+    }
+    unit->barrier = sector.barrier;
+    unit->color = sector.color;
+    unit->texture = assetManager.findTexture("textures/myFace.png");
+}
+
+bool init(const MapFile *mapFile, Map *target)
 {
     if (!target || !mapFile || !mapFile->content)
     {
@@ -59,16 +85,16 @@ bool init(MapFile *mapFile, Map* target)
         target->height = 0;
         return false;
     }
-    if (!initWithoutPopulating(mapFile->width, mapFile->height, mapFile->name, target))
+    if (!initWithoutPopulating(mapFile->header.width, mapFile->header.height, mapFile->header.name, target))
     {
         return false;
     }
-    strncpy_s(target->fileName, mapFile->fileNameLength + 1, mapFile->fileName, mapFile->fileNameLength + 1);
+    strncpy(target->fileName, mapFile->header.fileName, MAX_MAP_FILENAME_LENGTH);
     for (int y = 0; y < target->height; ++y)
     {
         for (int x = 0; x < target->width; ++x)
         {
-            target->setSectorContent(x, y, mapFile->content[x + y * target->width]);
+            setSectorContent(x, y, mapFile->content[x + y * target->width], target);
         }
     }
     return true;
@@ -77,13 +103,11 @@ bool init(MapFile *mapFile, Map* target)
 bool Map::init(int width, int height, const char *const name)
 {
     initWithoutPopulating(width, height, name, this);
-    memset(this->sectors, 0, sizeof(MapUnit) * this->width * this->height);
+    memset(this->sectors, 0, sizeof(Sector) * this->width * this->height);
     return true;
 }
 
-
-
-void Map::free()
+void Map::freeMap()
 {
     jadel::memoryFree(this->sectors);
     this->sectors = NULL;
@@ -97,23 +121,23 @@ bool Map::isSectorInBounds(int x, int y) const
     return result;
 }
 
-const MapUnit *Map::getSectorContent(int x, int y) const
+const Sector *Map::getSectorContent(int x, int y) const
 {
     if (!isSectorInBounds(x, y))
         return &nullMapUnit;
     return &this->sectors[x + y * this->width];
 }
 
-MapUnit *Map::getSectorContent(int x, int y)
+Sector *Map::getSector(int x, int y)
 {
     if (!isSectorInBounds(x, y))
         return &nullMapUnit;
     return &this->sectors[x + y * this->width];
 }
 
-void Map::setSectorContent(int x, int y, MapUnit content)
+void Map::setSectorContent(int x, int y, Sector content)
 {
-    MapUnit *unit = this->getSectorContent(x, y);
+    Sector *unit = this->getSector(x, y);
     if (!unit)
     {
         return;
@@ -121,16 +145,18 @@ void Map::setSectorContent(int x, int y, MapUnit content)
     *unit = content;
 }
 
-#define IF_FALSE_GOTO_FAIL(value, errMessage)                                            \
+#define IF_FALSE_GOTO_CLEANUP(value, errMessage)                                         \
     if (!value)                                                                          \
     {                                                                                    \
         const char *errorMessage = errMessage;                                           \
         jadel::message("[ERROR] Could not load map: %s - %s\n", filePath, errorMessage); \
-        goto maploadfail;                                                                \
+        result = false;                                                                  \
+        goto cleanup;                                                                    \
     }
 
 bool MapFile::loadFromFile(Map *target, const char *const fileName)
 {
+    bool result = true;
     *this = {0};
     jadel::BinaryFile file;
     const char *filePath;
@@ -145,41 +171,46 @@ bool MapFile::loadFromFile(Map *target, const char *const fileName)
         filePath = fileName;
     }
 
-    IF_FALSE_GOTO_FAIL(file.init(filePath), "File not found!");
+    IF_FALSE_GOTO_CLEANUP(file.init(filePath), "File not found!");
 
-    file.readString(this->signature, 5);
+    file.readString(this->header.signature, sizeof(mapSignature), sizeof(mapSignature));
 
-    IF_FALSE_GOTO_FAIL(strncmp(mapSignature, this->signature, 2) == 0,
-                       "Invalid file type or corrupt file!");
+    IF_FALSE_GOTO_CLEANUP(strncmp(mapSignature, this->header.signature, sizeof(mapSignature)) == 0,
+                          "Invalid file type or corrupt file!");
 
-    file.readInt(&this->nameLength);
-    IF_FALSE_GOTO_FAIL((this->nameLength <= MAX_MAP_NAME_LENGTH), "Invalid map name!");
-    file.readString(this->name, this->nameLength);
+    file.readString(this->header.name, sizeof(this->header.name), sizeof(this->header.name));
+    file.readString(this->header.fileName, sizeof(this->header.fileName), sizeof(this->header.fileName));
+    file.readInt(&this->header.width);
+    file.readInt(&this->header.height);
 
-    file.readInt(&this->fileNameLength);
-    IF_FALSE_GOTO_FAIL((this->fileNameLength <= MAX_MAP_FILENAME_LENGTH), "Invalid file name!");
-    file.readString(this->fileName, this->fileNameLength);
+    IF_FALSE_GOTO_CLEANUP((this->header.width > 0 && this->header.height > 0), "Invalid map size");
 
-    file.readInt(&this->width);
-    file.readInt(&this->height);
+    this->content = (MapFileSector *)jadel::memoryReserve(sizeof(MapFileSector) * this->header.width * this->header.height);
+    IF_FALSE_GOTO_CLEANUP(content, "Memory allocation failure!");
 
-    IF_FALSE_GOTO_FAIL((this->width > 0 && this->height > 0), "Invalid map size");
+    for (int numSectorsLoaded = 0; numSectorsLoaded < this->header.width * this->header.height; ++numSectorsLoaded)
+    {
+        MapFileSector *sector = &this->content[numSectorsLoaded];
+        IF_FALSE_GOTO_CLEANUP(file.readBool(&sector->barrier),
+                              "Corrupt file: invalid map data!");
+        IF_FALSE_GOTO_CLEANUP(file.readFloat(&sector->color.a),
+                              "Corrupt file: invalid map data!");
+        IF_FALSE_GOTO_CLEANUP(file.readFloat(&sector->color.r),
+                              "Corrupt file: invalid map data!");
+        IF_FALSE_GOTO_CLEANUP(file.readFloat(&sector->color.g),
+                              "Corrupt file: invalid map data!");
+        IF_FALSE_GOTO_CLEANUP(file.readFloat(&sector->color.b),
+                              "Corrupt file: invalid map data!");
+        IF_FALSE_GOTO_CLEANUP(file.readString(sector->textureFilePath, sizeof(sector->textureFilePath), sizeof(sector->textureFilePath)),
+                              "Corrupt file: invalid map data!");
+    }
+    IF_FALSE_GOTO_CLEANUP(init(this, target), "Initialization failure");
 
-    this->content = (MapUnit *)jadel::memoryReserve(sizeof(MapUnit) * this->width * this->height);
-    IF_FALSE_GOTO_FAIL(content, "Memory allocation failure!");
-
-    IF_FALSE_GOTO_FAIL(file.readNBytes(this->content, sizeof(MapUnit) * this->width * this->height),
-                       "Corrupt file: invalid map data!");
-
-    IF_FALSE_GOTO_FAIL(init(this, target), "Memory allocation failure");
-
-    jadel::memoryFree(this->content);
     target->isSavedToFile = true;
-    return true;
-
-maploadfail:
+cleanup:
+    jadel::memoryFree(this->content);
     file.close();
-    return false;
+    return result;
 }
 
 #define CLEANUP_AND_RETURN(success)          \
@@ -192,27 +223,40 @@ bool MapFile::saveToFile(const char *const fileName) const
 {
     const char *finalFileName;
     char *modifiedFileName = NULL;
+    int fileNameLength;
     if (isStringHeader(".rcmap", fileName))
     {
-        finalFileName = fileName;
+        finalFileName = fileName; 
     }
     else
     {
         modifiedFileName = appendString(fileName, ".rcmap");
         finalFileName = modifiedFileName;
     }
+    fileNameLength = strlen(finalFileName);
+    if (fileNameLength > MAX_MAP_FILENAME_LENGTH)
+    {
+        jadel::message("[ERROR] Could not save map %s - Filename too long!\n", finalFileName);
+        return false;
+    }
     jadel::BinaryFile file;
-    file.init(sizeof(MapFile) + (this->width * this->height * sizeof(MapUnit)));
-    file.writeString(mapSignature);
-    file.writeInt(this->nameLength);
-    file.writeString(this->name, this->nameLength);
-    file.writeInt(this->fileNameLength);
-    file.writeString(this->fileName, this->fileNameLength);
-    file.writeInt(this->width);
-    file.writeInt(this->height);
-    file.writeNBytes(this->width * this->height * sizeof(MapUnit), this->content);
+    file.init(sizeof(MapFileHeader) + (this->header.width * this->header.height * sizeof(MapFileSector)));
+    file.writeString(mapSignature, 5, sizeof(mapSignature));
+    file.writeString(this->header.name, MAX_MAP_NAME_LENGTH, sizeof(this->header.name));
+    file.writeString(finalFileName, MAX_MAP_FILENAME_LENGTH, sizeof(this->header.fileName));
+    file.writeInt(this->header.width);
+    file.writeInt(this->header.height);
+    for (int i = 0; i < this->header.width * this->header.height; ++i)
+    {
+        MapFileSector* sector = &this->content[i];
+        file.writeBool(sector->barrier);
+        file.writeFloat(sector->color.a);
+        file.writeFloat(sector->color.r);
+        file.writeFloat(sector->color.g);
+        file.writeFloat(sector->color.b);
+        file.writeString(sector->textureFilePath, MAX_TEXTURE_FILEPATH_LENGTH, sizeof(sector->textureFilePath));
+    }
 
-    
     if (!file.writeToFile(finalFileName))
     {
         jadel::message("[ERROR] Could not save map file: %s\n", finalFileName);
@@ -223,57 +267,67 @@ bool MapFile::saveToFile(const char *const fileName) const
 
 bool Map::saveToFile(const char *const fileName)
 {
-    if (!fileName) 
+    if (!fileName)
     {
         jadel::message("[ERROR] Could not save map - File name not specified!\n");
         return false;
     }
-    char* modifiedFileName = NULL;
-    const char* filePath = fileName;
+    char *modifiedFileName = NULL;
+    const char *filePath = fileName;
     if (!isStringHeader(".rcmap", fileName))
     {
         modifiedFileName = appendString(fileName, ".rcmap");
         filePath = modifiedFileName;
     }
-    int fileNameLength = strnlen_s(filePath, MAX_MAP_FILENAME_LENGTH + 1);
+    int fileNameLength = strnlen(filePath, MAX_MAP_FILENAME_LENGTH);
     if (fileNameLength > MAX_MAP_FILENAME_LENGTH)
     {
         jadel::message("[ERROR] Could not save map - File name too long!");
     }
+
+    // Copy map data to map file
     MapFile mapFile;
-    memmove(mapFile.signature, mapSignature, strlen(mapSignature));
-    mapFile.nameLength = strnlen_s(&this->name[0], MAX_MAP_NAME_LENGTH);
-    strncpy_s(mapFile.name, MAX_MAP_NAME_LENGTH, this->name, MAX_MAP_NAME_LENGTH);
-    mapFile.fileNameLength = fileNameLength;
-    strncpy_s(mapFile.fileName, mapFile.fileNameLength + 1, filePath, mapFile.fileNameLength + 1);
-    mapFile.width = this->width;
-    mapFile.height = this->height;
-    size_t contentSize = this->width * this->height * sizeof(MapUnit);
-    mapFile.content = (MapUnit *)jadel::memoryReserve(contentSize);
-    //jadel::memoryPrintDebugData();
+    strncpy(mapFile.header.signature, mapSignature, sizeof(mapFile.header.signature) - 1);
+    strncpy(mapFile.header.name, this->name, MAX_MAP_NAME_LENGTH);
+    strncpy(mapFile.header.fileName, filePath, MAX_MAP_FILENAME_LENGTH);
+    mapFile.header.width = this->width;
+    mapFile.header.height = this->height;
+    size_t contentSize = this->width * this->height * sizeof(MapFileSector);
+    mapFile.content = (MapFileSector *)jadel::memoryReserve(contentSize);
+    
     if (!mapFile.content)
     {
         jadel::message("[ERROR] Could not save map file: %s - Memory allocation failed!\n", fileName);
-        if (modifiedFileName) jadel::memoryFree(modifiedFileName);
+        if (modifiedFileName)
+            jadel::memoryFree(modifiedFileName);
         return false;
     }
-    //memmove(mapFile.content, this->sectors, contentSize);
 
-    for (int i = 0; i < mapFile.width * mapFile.height; ++i)
+    for (int i = 0; i < mapFile.header.width * mapFile.header.height; ++i)
     {
-            mapFile.content[i] = this->sectors[i];
+        Sector *currentSector = &this->sectors[i];
+        MapFileSector *currentFileSector = &mapFile.content[i];
+        currentFileSector->barrier = currentSector->barrier;
+        currentFileSector->color = currentSector->color;
+        strncpy(currentFileSector->textureFilePath, currentSector->texture->name.c_str(), MAX_TEXTURE_FILEPATH_LENGTH);
     }
+    // ********
+    
+    // Save mapFile
     bool result = mapFile.saveToFile(fileName);
+    
+    // Cleanup
     jadel::memoryFree(mapFile.content);
     if (result)
     {
         if (!this->isSavedToFile)
         {
-            strncpy_s(this->fileName, fileNameLength + 1, fileName, fileNameLength + 1);
+            strncpy(this->fileName, fileName, MAX_MAP_FILENAME_LENGTH + 1);
         }
         this->isSavedToFile = true;
     }
-    if (modifiedFileName) jadel::memoryFree(modifiedFileName);
+    if (modifiedFileName)
+        jadel::memoryFree(modifiedFileName);
     return result;
 }
 
@@ -288,7 +342,7 @@ bool Map::saveToFile()
     return result;
 }
 
-bool Map::loadFromFile(const char * const fileName, Map* map)
+bool Map::loadFromFile(const char *const fileName, Map *map)
 {
     MapFile file;
     bool result = file.loadFromFile(map, fileName);

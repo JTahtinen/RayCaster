@@ -4,9 +4,11 @@
 #include "rc.h"
 #include <string.h>
 
+static const char * const saveFileHeader = "SF";
+
 struct SaveFile
 {
-    char header[2];
+    char header[sizeof(saveFileHeader)];
     GameState state;
 };
 
@@ -31,13 +33,13 @@ bool loadSaveFromFile(const char *const filePath, GameState *target)
     }
     if (!file.init(finalFilePath))
     {
-        jadel::message("[ERROR] Could not load save file %s.!\n", finalFilePath);
+        jadel::message("[ERROR] Could not load save file %s!\n", finalFilePath);
         return false;
     }
     char header[3] = {0};
-    file.readString(header, 2);
+    file.readString(header, sizeof(header), sizeof(header));
 
-    if (header[0] != 'S' || header[1] != 'F')
+    if (strncmp(header, saveFileHeader, sizeof(saveFileHeader) - 1) != 0)
     {
         jadel::message("[ERROR] Could not load save file %s. Corrupt file!\n", finalFilePath);
         file.close();
@@ -47,8 +49,7 @@ bool loadSaveFromFile(const char *const filePath, GameState *target)
     float playerRotation;
     int mapFilePathLength = 0;
     char mapFilePath[MAX_MAP_FILENAME_LENGTH + 1] = {0};
-    file.readInt(&mapFilePathLength);
-    file.readString(mapFilePath, mapFilePathLength);
+    file.readString(mapFilePath, MAX_MAP_FILENAME_LENGTH, sizeof(mapFilePath));
     file.readFloat(&playerPos.x);
     file.readFloat(&playerPos.y);
     file.readFloat(&playerRotation);
@@ -72,9 +73,10 @@ bool loadSaveFromFile(const char *const filePath, GameState *target)
 
 bool saveGameToFile(const char *fileName, const GameState *state)
 {
-    if (state->map.isSavedToFile)
+    if (!state->map.isSavedToFile)
     {
         jadel::message("[ERROR] Could not save game file: %s - Map file doesn't exist!\n", fileName);
+        return false;
     }
     jadel::BinaryFile file;
     SaveFile saveFile;
@@ -101,8 +103,7 @@ bool saveGameToFile(const char *fileName, const GameState *state)
     jadel::Vec2 playerPos = state->player.getPosition();
     float playerRotation = state->player.getRotation();
     file.writeString(saveFile.header, 2);
-    file.writeInt(strnlen_s(state->map.fileName, MAX_MAP_FILENAME_LENGTH));
-    file.writeString(state->map.fileName);
+    file.writeString(state->map.fileName, MAX_MAP_FILENAME_LENGTH,sizeof(state->map.fileName));
     file.writeFloat(playerPos.x);
     file.writeFloat(playerPos.y);
     file.writeFloat(playerRotation);
