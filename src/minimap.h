@@ -9,7 +9,7 @@ struct Minimap
     RectRenderable *rects;
     size_t maxRects;
     size_t numRects;
-    Line *lines;
+    LineRenderable *lines;
     size_t maxLines;
     size_t numLines;
 
