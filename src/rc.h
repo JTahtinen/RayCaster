@@ -5,6 +5,7 @@
 #include "util.h"
 #include "actor.h"
 #include "controlscheme.h"
+#include "assetmanager.h"
 
 extern int screenWidth;
 extern int screenHeight;
@@ -26,8 +27,13 @@ enum
     GAME_COMMAND_WALKING_SPEED,
     GAME_COMMAND_TOGGLE_MINIMAP,
     GAME_COMMAND_SAVE_QUICK,
-    GAME_COMMAND_LOAD_QUICK
+    GAME_COMMAND_LOAD_QUICK,
+    GAME_COMMAND_TOGGLE_MOUSEMODE,
 };
+
+extern bool relativeMouseMode;
+
+extern AssetManager assetManager;
 
 struct GameState
 {

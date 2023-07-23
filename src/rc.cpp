@@ -1,7 +1,6 @@
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
 #include <jadel.h>
 #include <thread>
+#include "imageload.h"
 #include "minimap.h"
 #include "rc.h"
 #include "render.h"
@@ -13,8 +12,12 @@
 #include "defs.h"
 #include "command.h"
 
+AssetManager assetManager;
+
 static int myArgc;
 static char **myArgv;
+
+bool relativeMouseMode = true;
 
 int screenWidth = 1280;
 int screenHeight = 720;
@@ -52,24 +55,6 @@ jadel::Color createColorFrom(uint32 col)
     return result;
 }
 
-bool load_PNG(const char *filename, jadel::Surface *target)
-{
-    int width;
-    int height;
-    int channels;
-    target->pixels = stbi_load(filename, &width, &height, &channels, 0);
-    if (!target->pixels)
-        return false;
-    for (int i = 0; i < width * height; ++i)
-    {
-        uint8 *pixel = (uint8 *)target->pixels + (channels * i);
-        jadel::flipBytes(pixel, 3);
-    }
-    target->width = width;
-    target->height = height;
-    return true;
-}
-
 void GameState::setMap(Map *map)
 {
     if (map->isSavedToFile)
@@ -79,15 +64,49 @@ void GameState::setMap(Map *map)
     {
         for (int x = 0; x < map->width; ++x)
         {
-            jadel::message("%d", map->getSectorContent(x, y)->barrier);
+            jadel::message("%d", map->getSector(x, y)->barrier);
         }
         jadel::message("\n");
     }
     this->map = *map;
 }
 
+void setMouseMode(bool mouseMode)
+{
+    relativeMouseMode = mouseMode;
+    jadel::inputSetCursorVisible(!mouseMode);
+    jadel::inputSetRelativeMouseMode(mouseMode);
+}
+
+void toggleMouseMode()
+{
+    setMouseMode(!relativeMouseMode);
+}
+float mouseSensitivity = 42.6f;
+bool startEffectDone = false;
+float effectStartDivision = 100;
+Timer startEffectTimer;
+float effectDurationInMillis = 2000;
+
 void tick()
 {
+    if (!startEffectDone)
+    {
+        uint32 elapsed = startEffectTimer.getElapsedInMillis();
+
+        resolutionDivider = (effectStartDivision + 1) - ((float)elapsed / (float)effectDurationInMillis) * effectStartDivision;
+
+        if (elapsed >= effectDurationInMillis)
+        {
+            startEffectDone = true;
+        }
+        if (resolutionDivider < 1)
+            resolutionDivider = 1;
+        // jadel::message("%d\n", resolutionDivider);
+    }
+    static Texture *wallTex = assetManager.findTexture("textures/wall.png");
+    if (!wallTex)
+        exit(0);
     Player *player = &currentGameState.player;
     player->actor.vel *= 0;
     // jadel::message("sc W: %f, sc D: %f\n", screenPlaneWidth, screenPlaneDist);
@@ -126,23 +145,50 @@ void tick()
             player->actor.movementSpeed = standardMovementSpeed;
             break;
         case GAME_COMMAND_SAVE_QUICK:
-            saveGameToFile("save/save01", &currentGameState);
+            saveGameToFile("save/quick", &currentGameState);
             break;
         case GAME_COMMAND_LOAD_QUICK:
-            loadSaveFromFile("save/save01", &currentGameState);
+            loadSaveFromFile("save/quick", &currentGameState);
             break;
         case GAME_COMMAND_TOGGLE_MINIMAP:
             currentGameState.showMiniMap = !currentGameState.showMiniMap;
             break;
+        case GAME_COMMAND_TOGGLE_MOUSEMODE:
+            toggleMouseMode();
+            break;
         }
+    }
+
+    if (relativeMouseMode)
+    {
+        jadel::Vec2 mouseDelta = jadel::inputGetMouseDeltaRelative();
+        player->actor.modifyRotation((-mouseDelta.x * mouseSensitivity));
     }
     if (relativeDirVector.length() > 0)
         relativeDirVector = relativeDirVector.normalize() * player->actor.movementSpeed;
 
     jadel::Mat3 playerRotationMatrix = getRotationMatrix(player->getRotation());
-    jadel::Vec2 forward = playerRotationMatrix.mul(relativeDirVector);
-
+    jadel::Vec2 forward = playerRotationMatrix * relativeDirVector;
+    Ray facingRay;
+    facingRay.shoot(player->getPosition(), playerRotationMatrix * jadel::Vec2(0, 1), 100, &currentGameState.map);
+    currentGameState.minimap.pushLine(facingRay.start, facingRay.end, {1, 0, 1, 0});
+    if (jadel::inputIsMouseLeftHeld())
+    {
+        if (facingRay.getRayEndClip().content.barrier)
+        {
+            int mapX = facingRay.getRayEndClip().content.sectorX;
+            int mapY = facingRay.getRayEndClip().content.sectorY;
+            currentGameState.map.getSector(mapX, mapY)->texture = wallTex;
+        }
+    }
     player->actor.vel = forward;
+
+    int mWheelScrolls = jadel::inputGetMouseWheelScrolls();
+    if (mWheelScrolls)
+    {
+        mouseSensitivity += 5.0f * mWheelScrolls;
+        jadel::message("%f\n", mouseSensitivity);
+    }
 
     if (jadel::inputIsKeyPressed(jadel::KEY_N))
     {
@@ -226,11 +272,26 @@ bool setGameState(const GameState *state)
 
 void init()
 {
+    initRenderer();
+    if (!assetManager.init())
+    {
+        exit(0);
+    }
+    if (!assetManager.loadTexture("textures/myFace.png"))
+    {
+        exit(0);
+    }
+    if (!assetManager.loadTexture("textures/wall.png"))
+    {
+        exit(0);
+    }
+    setMouseMode(true);
     bool gameStateSet = false;
     bool mapLoaded = false;
     maxActors = 100;
     numActors = 0;
     Map map;
+
     actors = (Actor *)jadel::memoryReserve(maxActors * sizeof(Actor));
     pushActor(2.5f, 3.5f, {0, 0, 0.3f, 0.7f});
     pushActor(5.5f, 5.5f, {0, 0, 0.4f, 0.6f});
@@ -243,11 +304,13 @@ void init()
     gameControls->addKeyPressCommand(GAME_COMMAND_MOVE_RIGHT, jadel::KEY_D);
     gameControls->addKeyPressCommand(GAME_COMMAND_TURN_LEFT, jadel::KEY_LEFT);
     gameControls->addKeyPressCommand(GAME_COMMAND_TURN_RIGHT, jadel::KEY_RIGHT);
-    gameControls->addKeyPressCommand(GAME_COMMAND_SAVE_QUICK, jadel::KEY_Q);
-    gameControls->addKeyPressCommand(GAME_COMMAND_LOAD_QUICK, jadel::KEY_E);
+    gameControls->addKeyTypeCommand(GAME_COMMAND_SAVE_QUICK, jadel::KEY_Q);
+    gameControls->addKeyTypeCommand(GAME_COMMAND_LOAD_QUICK, jadel::KEY_E);
     gameControls->addKeyPressCommand(GAME_COMMAND_RUNNING_SPEED, jadel::KEY_SHIFT);
     gameControls->addKeyReleaseCommand(GAME_COMMAND_WALKING_SPEED, jadel::KEY_SHIFT);
     gameControls->addKeyTypeCommand(GAME_COMMAND_TOGGLE_MINIMAP, jadel::KEY_TAB);
+    gameControls->addKeyTypeCommand(GAME_COMMAND_TOGGLE_MOUSEMODE, jadel::KEY_K);
+
     if (myArgc > 1)
     {
         for (int i = 1; i < myArgc; ++i)
@@ -271,7 +334,7 @@ void init()
     // currentGameState.map.init(20, 15);
     if (!mapLoaded)
     {
-        Map::loadFromFile("maps/map01.rcmap", &map);
+        Map::loadFromFile("maps/map04.rcmap", &map);
     }
     currentGameState.setMap(&map);
 
@@ -284,10 +347,11 @@ void init()
     minimap->maxRects = 500;
     minimap->maxLines = 500;
     minimap->rects = (RectRenderable *)jadel::memoryReserve(minimap->maxRects * sizeof(RectRenderable));
-    minimap->lines = (Line *)jadel::memoryReserve(minimap->maxLines * sizeof(Line));
+    minimap->lines = (LineRenderable *)jadel::memoryReserve(minimap->maxLines * sizeof(LineRenderable));
     minimap->scale = 0.05f;
     minimap->screenStart = jadel::Vec2(0.2f, 0);
     minimap->clear();
+    startEffectTimer.start();
 }
 
 int JadelMain(int argc, char **argv)
@@ -299,6 +363,7 @@ int JadelMain(int argc, char **argv)
         jadel::message("Jadel init failed!\n");
         return 0;
     }
+
     jadel::allocateConsole();
     srand(time(NULL));
     for (int i = 0; i < argc; ++i)
@@ -312,6 +377,7 @@ int JadelMain(int argc, char **argv)
         return 0;
     }
 #endif
+
     jadel::Window window;
     jadel::windowCreate(&window, "RayCaster", screenWidth, screenHeight);
     jadel::Surface winSurface;
@@ -322,29 +388,32 @@ int JadelMain(int argc, char **argv)
     jadel::graphicsSetClearColor(0);
     jadel::graphicsClearTargetSurface();
 
-
+    initImageLoad();
     jadel::Surface mapPNG;
 
-    if (!load_PNG("maps/map4png.png", &mapPNG))
-    {
-        return 0;
-    }
-    
-    Map map;
-    map.init(mapPNG.width, mapPNG.height, "Fourth map");
-
-    uint32* mapPixels = (uint32*)mapPNG.pixels;
-    for (int y = 0; y < map.height; ++y)
-    {
-        for (int x = 0; x < map.width; ++x)
+    /*
+        if (!load_PNG("maps/map4png.png", &mapPNG))
         {
-            int index = x + (map.height - 1 - y) * map.width;
-            jadel::Color mapPixel = createColorFrom(mapPixels[x + y * map.width]);
-            map.sectors[index].barrier = mapPixel.a > 0;
-            map.sectors[index].color = mapPixel;
+            return 0;
         }
-    }
-    map.saveToFile("maps/map04");
+
+        Map map;
+        map.init(mapPNG.width, mapPNG.height, "Fourth map");
+
+        uint32 *mapPixels = (uint32 *)mapPNG.pixels;
+        for (int y = 0; y < map.height; ++y)
+        {
+            for (int x = 0; x < map.width; ++x)
+            {
+                int index = x +  y * map.width;
+                jadel::Color mapPixel = createColorFrom(mapPixels[x + y * map.width]);
+                map.sectors[index].barrier = mapPixel.a > 0;
+                map.sectors[index].color = mapPixel;
+                map.sectors[index].texture = assetManager.findTexture("textures/myFace.png");
+            }
+        }
+        map.saveToFile("maps/map04");
+    */
     init();
     frameTimer.start();
     uint32 elapsedInMillis = 0;
@@ -354,9 +423,8 @@ int JadelMain(int argc, char **argv)
 
     while (true)
     {
-        JadelUpdate();
-
         tick();
+        JadelUpdate();
         ++framesPerSecond;
         jadel::windowUpdate(&window, &winSurface);
         elapsedInMillis = frameTimer.getMillisSinceLastUpdate();
