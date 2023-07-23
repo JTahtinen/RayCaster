@@ -9,8 +9,8 @@ bool CollisionData::check(Map *map, jadel::Vec2 position, jadel::Vec2 velocity)
     this->yCollision = false;
     float actorRadius = 0.3f;
     this->checkedVelocity = velocity;
-    float velLength = velocity.length();
-    if (velLength == 0)
+    
+    if (velocity.x == 0 && velocity.y == 0)
     {
         return false;
     }
@@ -29,32 +29,35 @@ bool CollisionData::check(Map *map, jadel::Vec2 position, jadel::Vec2 velocity)
     Ray raysFired[3];
     int numRaysFired;
     int i = 0;
+
+    static float edgeMargin = 0.01f;
     do
     {
+        float velLength = modifiedVelocity.length();
         numRaysFired = 0;
-        jadel::Vec2 dir = modifiedVelocity.normalize();
-        bool down = dir.y < 0;
-        bool up = dir.y > 0;
-        bool left = dir.x < 0;
-        bool right = dir.x > 0;
+
+        bool down = modifiedVelocity.y < 0;
+        bool up = modifiedVelocity.y > 0;
+        bool left = modifiedVelocity.x < 0;
+        bool right = modifiedVelocity.x > 0;
         if (up || left)
         {
-            upLeft.shoot(upLeftPos, dir, ceilf(velLength) + 1, map);
+            upLeft.shoot(upLeftPos, modifiedVelocity, velLength + edgeMargin, map);
             raysFired[numRaysFired++] = upLeft;
         }
         if (up || right)
         {
-            upRight.shoot(upRightPos, dir, ceilf(velLength) + 1, map);
+            upRight.shoot(upRightPos, modifiedVelocity, velLength + edgeMargin, map);
             raysFired[numRaysFired++] = upRight;
         }
         if (down || right)
         {
-            downRight.shoot(downRightPos, dir, ceilf(velLength) + 1, map);
+            downRight.shoot(downRightPos, modifiedVelocity, velLength + edgeMargin, map);
             raysFired[numRaysFired++] = downRight;
         }
         if (down || left)
         {
-            downLeft.shoot(downLeftPos, dir, ceilf(velLength) + 1, map);
+            downLeft.shoot(downLeftPos, modifiedVelocity, velLength + edgeMargin, map);
             raysFired[numRaysFired++] = downLeft;
         }
 
@@ -63,7 +66,8 @@ bool CollisionData::check(Map *map, jadel::Vec2 position, jadel::Vec2 velocity)
         for (int i = 0; i < numRaysFired; ++i)
         {
             Ray *currentRay = &raysFired[i];
-            if (currentRay->rayEndContent->barrier)
+            RayClip rayClip = currentRay->getRayEndClip();
+            if (rayClip.content.type == RAY_CONTENT_TYPE_SECTOR && rayClip.content.barrier)
             {
                 jadel::Vec2 currentRayVector = raysFired[i].rayVector();
                 if (!shortestCollidedRay || isVec2ALongerThanB(shortestRayVector, currentRayVector))
@@ -77,24 +81,34 @@ bool CollisionData::check(Map *map, jadel::Vec2 position, jadel::Vec2 velocity)
         {
             break;
         }
-
-        bool xCollision = (left || right) && (shortestCollidedRay->isClippedOnCorner || (!shortestCollidedRay->isVerticallyClipped && (fabs(modifiedVelocity.x) > fabs(shortestRayVector.x))));
-        bool yCollision = shortestCollidedRay->isVerticallyClipped && (fabs(modifiedVelocity.y) > fabs(shortestRayVector.y));
+        RayClip shortestRayClip = shortestCollidedRay->getRayEndClip();
+    
+        bool xCollision = (left || right) && (shortestRayClip.content.isClippedOnCorner || (!shortestRayClip.content.isVerticallyClipped && (fabs(modifiedVelocity.x) > fabs(shortestRayVector.x) - edgeMargin * 2)));
+        bool yCollision = (up || down) && (shortestRayClip.content.isVerticallyClipped && (fabs(modifiedVelocity.y) > fabs(shortestRayVector.y) - edgeMargin));
+        //bool xCollision = (fabs(modifiedVelocity.x) > fabs(shortestRayVector.x)) - 0.01f;
+        //bool yCollision = (fabs(modifiedVelocity.y) > fabs(shortestRayVector.y)) - 0.01f;
 
         if (!xCollision && !yCollision)
         {
             break;
         }
         // jadel::Vec2 edgeDistFromWall(rayVector.x - movementDirX * actorRadius, rayVector.y - movementDirY * actorRadius);
+
         if (yCollision)
         {
-            modifiedVelocity.y = shortestRayVector.y;
+            modifiedVelocity.y = shortestRayVector.y - (modifiedVelocity.y > 0 ? 1.0f : -1.0f) * edgeMargin;
             this->yCollision = true;
+            
         }
-        if (xCollision)
+        else if (xCollision)
         {
-            modifiedVelocity.x = shortestRayVector.x;
+            modifiedVelocity.x = shortestRayVector.x - (modifiedVelocity.x > 0 ? 1.0f : -1.0f) * edgeMargin;
             this->xCollision = true;
+        }
+
+        if (shortestRayClip.content.isClippedOnCorner)
+        {
+            jadel::message("Corner collision!\n");
         }
 
         ++i;
@@ -104,7 +118,7 @@ bool CollisionData::check(Map *map, jadel::Vec2 position, jadel::Vec2 velocity)
 
     for (int i = 0; i < numRaysFired; ++i)
     {
-        currentGameState.minimap.pushLine(raysFired[i].start, raysFired[i].end, {1, 1, 1, 0});
+        currentGameState.minimap.pushLine(raysFired[i].start, raysFired[i].start + raysFired[i].rayVector().normalize() * 0.5f, {1, 1, 1, 0});
     }
 
     this->checkedVelocity = modifiedVelocity;
